@@ -1,0 +1,6 @@
+src/
+tests/
+examples/
+.kiro/
+tsconfig.json
+.gitignore

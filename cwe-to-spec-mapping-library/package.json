@@ -1,0 +1,58 @@
+{
+  "name": "@sis/cwe-to-spec-mapping",
+  "version": "0.1.0",
+  "description": "CWE-to-Spec mapping library for security hardening in Spec-Driven Development",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "harden-requirements": "./dist/cli/harden-requirements.js"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./mappings": {
+      "import": "./dist/mappings/index.js",
+      "types": "./dist/mappings/index.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/cli/harden-requirements.js",
+    "harden": "tsx src/cli/harden-requirements.ts",
+    "harden:local": "node dist/cli/harden-requirements.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src/",
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "cwe",
+    "security",
+    "specification",
+    "EARS",
+    "SDD",
+    "kiro"
+  ],
+  "license": "MIT-0",
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "eslint": "^9.0.0",
+    "tsx": "^4.23.1",
+    "typescript": "^5.7.0",
+    "typescript-eslint": "^8.65.0",
+    "vitest": "^3.0.0"
+  },
+  "overrides": {
+    "brace-expansion": "^5.0.8",
+    "minimatch": "^10.2.6"
+  }
+}

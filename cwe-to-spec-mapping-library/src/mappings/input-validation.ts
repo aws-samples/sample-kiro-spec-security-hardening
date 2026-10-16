@@ -1,0 +1,276 @@
+import type { CWEMapping } from "../types/index.js";
+
+export const inputValidationMappings: CWEMapping[] = [
+  {
+    id: "CWE-20",
+    name: "Improper Input Validation",
+    description: "The product receives input but does not validate or incorrectly validates it",
+    owaspCategory: "A03:2021-Injection",
+    severity: "high",
+    tags: ["input-validation", "general", "boundary-check"],
+    triggerConditions: [
+      {
+        id: "TC-20-1",
+        description: "Requirement accepts any form of external input",
+        keywords: ["input", "submit", "enter", "provide", "supply", "request", "parameter", "form", "field"],
+        semanticPatterns: [
+          "user.*submit",
+          "accept.*input",
+          "receive.*parameter",
+          "enter.*value",
+          "provide.*data",
+        ],
+        dataFlowIndicators: ["external → processing"],
+      },
+    ],
+    earsConstraints: [
+      {
+        id: "EC-20-1",
+        pattern: "event-driven",
+        template: "WHEN external input is received, THE SYSTEM SHALL validate the input against an expected schema (type, length, range, format) and SHALL reject input that does not conform with a descriptive error code.",
+        securityPrimitive: "input-schema-validation",
+        rationale: "Unvalidated input is the root cause of injection, overflow, and type confusion vulnerabilities.",
+      },
+    ],
+  },
+  {
+    id: "CWE-434",
+    name: "Unrestricted Upload of File with Dangerous Type",
+    description: "The product allows the upload of dangerous file types without sufficient restrictions",
+    owaspCategory: "A04:2021-Insecure Design",
+    severity: "critical",
+    tags: ["input-validation", "file-upload", "content-validation"],
+    triggerConditions: [
+      {
+        id: "TC-434-1",
+        description: "Requirement accepts file uploads from users",
+        keywords: ["upload", "file", "attachment", "import file", "document", "image", "media"],
+        semanticPatterns: [
+          "upload.*file",
+          "attach.*document",
+          "import.*file",
+          "submit.*image",
+          "user.*uploads",
+        ],
+        dataFlowIndicators: ["user file → server storage"],
+      },
+    ],
+    earsConstraints: [
+      {
+        id: "EC-434-1",
+        pattern: "event-driven",
+        template: "WHEN a user uploads a file, THE SYSTEM SHALL validate the file's magic bytes against an allowlist of permitted MIME types AND SHALL reject files whose extension does not match their detected content type.",
+        securityPrimitive: "file-type-validation",
+        rationale: "Unrestricted uploads enable remote code execution via uploaded web shells or polyglot files.",
+      },
+      {
+        id: "EC-434-2",
+        pattern: "event-driven",
+        template: "WHEN a user uploads a file, THE SYSTEM SHALL enforce a maximum file size of {configured_limit} AND SHALL store uploaded files outside the web-accessible document root with a randomized filename.",
+        securityPrimitive: "upload-storage-isolation",
+        rationale: "Isolating uploads from the document root prevents direct execution of uploaded payloads.",
+      },
+    ],
+  },
+  {
+    id: "CWE-22",
+    name: "Path Traversal",
+    description: "The product uses external input to construct a pathname without neutralizing special elements",
+    owaspCategory: "A01:2021-Broken Access Control",
+    severity: "high",
+    tags: ["input-validation", "path-traversal", "file-access"],
+    triggerConditions: [
+      {
+        id: "TC-22-1",
+        description: "Requirement accesses files using user-supplied paths or names",
+        keywords: ["file", "path", "download", "serve", "read file", "filename", "directory"],
+        semanticPatterns: [
+          "download.*file.*by.*name",
+          "serve.*file",
+          "read.*from.*path",
+          "access.*directory",
+          "open.*file.*specified",
+        ],
+        dataFlowIndicators: ["user-supplied path → filesystem access"],
+      },
+    ],
+    earsConstraints: [
+      {
+        id: "EC-22-1",
+        pattern: "ubiquitous",
+        template: "THE SYSTEM SHALL resolve all file paths to a canonical form and SHALL verify the resolved path remains within the designated base directory. THE SYSTEM SHALL reject paths containing traversal sequences (../, ..\\ or encoded equivalents).",
+        securityPrimitive: "path-canonicalization",
+        rationale: "Path traversal enables reading/writing arbitrary files on the server filesystem.",
+      },
+    ],
+  },
+  {
+    id: "CWE-502",
+    name: "Deserialization of Untrusted Data",
+    description: "The product deserializes untrusted data without sufficient verification of the resulting data",
+    owaspCategory: "A08:2021-Software and Data Integrity Failures",
+    severity: "critical",
+    tags: ["input-validation", "deserialization", "untrusted-data"],
+    triggerConditions: [
+      {
+        id: "TC-502-1",
+        description: "Requirement deserializes external payloads",
+        keywords: ["deserialize", "parse", "unmarshal", "decode", "json", "xml", "yaml", "pickle", "object"],
+        semanticPatterns: [
+          "deserialize.*payload",
+          "parse.*external.*data",
+          "unmarshal.*request",
+          "decode.*message",
+          "accept.*serialized.*object",
+        ],
+        dataFlowIndicators: ["external serialized data → runtime objects"],
+      },
+    ],
+    earsConstraints: [
+      {
+        id: "EC-502-1",
+        pattern: "ubiquitous",
+        template: "THE SYSTEM SHALL validate the schema and type of all deserialized data before use. THE SYSTEM SHALL NOT deserialize data that does not pass schema validation. THE SYSTEM SHALL NOT use native object deserialization (e.g., Java ObjectInputStream, Python pickle) on untrusted input.",
+        securityPrimitive: "safe-deserialization",
+        rationale: "Unsafe deserialization of untrusted data enables remote code execution through crafted payloads.",
+      },
+    ],
+  },
+  {
+    id: "CWE-601",
+    name: "URL Redirection to Untrusted Site (Open Redirect)",
+    description: "The product accepts a URL from untrusted input and redirects to it without validation",
+    owaspCategory: "A01:2021-Broken Access Control",
+    severity: "medium",
+    tags: ["input-validation", "redirect", "url-validation"],
+    triggerConditions: [
+      {
+        id: "TC-601-1",
+        description: "Requirement issues a redirect using a URL from user input",
+        keywords: ["redirect", "forward", "return url", "callback url", "next", "continue", "goto"],
+        semanticPatterns: [
+          "redirect.*to.*url",
+          "forward.*user.*to",
+          "return.*to.*callback",
+          "navigate.*to.*provided.*url",
+        ],
+        dataFlowIndicators: ["user-supplied URL → HTTP redirect"],
+      },
+    ],
+    earsConstraints: [
+      {
+        id: "EC-601-1",
+        pattern: "ubiquitous",
+        template: "THE SYSTEM SHALL validate redirect targets against an allowlist of permitted domains. THE SYSTEM SHALL NOT perform redirects to arbitrary URLs supplied in request parameters.",
+        securityPrimitive: "redirect-allowlist",
+        rationale: "Open redirects enable phishing attacks leveraging the legitimate domain's trust.",
+      },
+    ],
+  },
+  {
+    id: "CWE-400",
+    name: "Uncontrolled Resource Consumption",
+    description: "The product does not properly control resource allocation, enabling denial of service",
+    owaspCategory: "A04:2021-Insecure Design",
+    severity: "medium",
+    tags: ["input-validation", "dos", "resource-limits", "rate-limiting"],
+    triggerConditions: [
+      {
+        id: "TC-400-1",
+        description: "Requirement processes variable-size input or allows repeated requests",
+        keywords: ["upload", "batch", "bulk", "list", "process", "parse", "request", "query"],
+        semanticPatterns: [
+          "process.*batch",
+          "accept.*bulk.*upload",
+          "handle.*large.*payload",
+          "parse.*user.*document",
+          "process.*unlimited",
+        ],
+        dataFlowIndicators: ["unbounded external input → resource consumption"],
+      },
+    ],
+    earsConstraints: [
+      {
+        id: "EC-400-1",
+        pattern: "ubiquitous",
+        template: "THE SYSTEM SHALL enforce maximum request size, maximum items per batch, and per-user rate limits. THE SYSTEM SHALL reject requests exceeding these limits with HTTP 429 or 413 as appropriate.",
+        securityPrimitive: "resource-limits",
+        rationale: "Unbounded resource consumption enables denial-of-service attacks against shared infrastructure.",
+      },
+    ],
+  },
+  {
+    id: "CWE-918",
+    name: "Server-Side Request Forgery (SSRF)",
+    description: "The product makes requests to URLs controlled by the user without restricting the target",
+    owaspCategory: "A10:2021-Server-Side Request Forgery",
+    severity: "critical",
+    tags: ["input-validation", "ssrf", "url-validation", "network"],
+    triggerConditions: [
+      {
+        id: "TC-918-1",
+        description: "Requirement fetches a URL or resource on behalf of a user",
+        keywords: ["fetch", "request", "url", "webhook", "import url", "proxy", "download from"],
+        semanticPatterns: [
+          "fetch.*url",
+          "fetch.*from.*url",
+          "fetch.*endpoint",
+          "request.*user.*specified.*endpoint",
+          "import.*from.*url",
+          "proxy.*request.*to",
+          "download.*from.*url",
+          "load.*from.*remote",
+          "url.*to.*import",
+        ],
+        dataFlowIndicators: ["user-supplied URL → server-side HTTP request"],
+      },
+    ],
+    earsConstraints: [
+      {
+        id: "EC-918-1",
+        pattern: "event-driven",
+        template: "WHEN the system fetches a user-supplied URL, THE SYSTEM SHALL validate the URL against an allowlist of permitted schemes (https only) and domains AND SHALL resolve the hostname and reject any URL whose host resolves to an RFC-1918 private address range, link-local range (169.254.0.0/16), or loopback address.",
+        securityPrimitive: "ssrf-prevention",
+        rationale: "SSRF enables attackers to pivot from the application server to internal network services.",
+      },
+    ],
+  },
+  {
+    id: "CWE-807",
+    name: "Reliance on Untrusted Inputs in a Security Decision",
+    description: "A security decision is made based on input an attacker can control",
+    owaspCategory: "A04:2021-Insecure Design",
+    severity: "high",
+    tags: ["input-validation", "security-decision", "authorization", "trust-boundary"],
+    triggerConditions: [
+      {
+        id: "TC-807-1",
+        description: "Requirement makes an authentication, authorization, or trust decision using client-supplied data",
+        keywords: ["role", "is admin", "header", "cookie", "hidden field", "privilege", "referer", "user-agent", "flag"],
+        semanticPatterns: [
+          "grant.*access.*based on.*header",
+          "determine.*role.*from.*request",
+          "trust.*client.*supplied.*flag",
+          "authorize.*using.*cookie.*value",
+        ],
+        dataFlowIndicators: ["client input → security decision"],
+      },
+    ],
+    earsConstraints: [
+      {
+        id: "EC-807-1",
+        pattern: "ubiquitous",
+        template: "THE SYSTEM SHALL base every authentication, authorization, and trust decision solely on server-side state that the client cannot modify.",
+        securityPrimitive: "server-side-trust",
+        rationale: "Client-controlled values such as hidden fields, headers, or cookies can be forged to bypass security checks.",
+      },
+      {
+        id: "EC-807-2",
+        pattern: "unwanted-behavior",
+        template: "IF a security decision depends on a client-supplied value, THEN THE SYSTEM SHALL re-derive or verify that value against an authoritative server-side source.",
+        securityPrimitive: "authoritative-revalidation",
+        rationale: "Re-validating against server state removes the client's ability to influence the outcome.",
+      },
+    ],
+  },
+];

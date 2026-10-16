@@ -1,0 +1,21 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "spec-it-safe",
+  "version": "1.0.0",
+  "description": "Harden Kiro specs with security primitives before code is written. Analyzes EARS-format requirements, detects relevant CWE/OWASP weaknesses, and proposes traceable, testable security requirements.",
+  "author": {
+    "name": "Rajdeep Mukherjee"
+  },
+  "homepage": "https://github.com/kirodotdev/powers",
+  "keywords": [
+    "security",
+    "spec-driven development",
+    "ears",
+    "cwe",
+    "owasp",
+    "requirements hardening",
+    "shift left",
+    "kiro power"
+  ],
+  "license": "MIT-0"
+}

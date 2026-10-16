@@ -1,0 +1,397 @@
+import type { CWEMapping } from "../types/index.js";
+
+export const injectionMappings: CWEMapping[] = [
+  {
+    id: "CWE-89",
+    name: "SQL Injection",
+    description: "Improper neutralization of special elements used in an SQL command",
+    owaspCategory: "A03:2021-Injection",
+    severity: "critical",
+    tags: ["injection", "database", "input-validation", "parameterized-query"],
+    triggerConditions: [
+      {
+        id: "TC-89-1",
+        description: "Requirement queries a database using external input",
+        keywords: ["query", "database", "search", "filter", "lookup", "find", "select", "retrieve", "fetch"],
+        semanticPatterns: [
+          "user submits.*search",
+          "search.*by.*name|id|email|field",
+          "query.*records",
+          "filter.*results",
+          "look up.*from.*database",
+          "retrieve.*based on.*input",
+          "fetch.*matching",
+        ],
+        dataFlowIndicators: ["user input → database query", "request parameter → SQL"],
+      },
+      {
+        id: "TC-89-2",
+        description: "Requirement involves dynamic report generation from user criteria",
+        keywords: ["report", "export", "generate", "criteria", "dynamic", "custom query"],
+        semanticPatterns: [
+          "generate.*report.*based on",
+          "export.*filtered by",
+          "custom.*query",
+          "dynamic.*filter",
+        ],
+      },
+    ],
+    earsConstraints: [
+      {
+        id: "EC-89-1",
+        pattern: "ubiquitous",
+        template: "THE SYSTEM SHALL execute all database queries using parameterized statements or prepared statements only. THE SYSTEM SHALL NOT construct query strings by concatenation of user-supplied values.",
+        securityPrimitive: "parameterized-query",
+        rationale: "Parameterized queries separate SQL logic from data, making injection structurally impossible regardless of input content.",
+      },
+      {
+        id: "EC-89-2",
+        pattern: "event-driven",
+        template: "WHEN {actor} submits {input_description}, THE SYSTEM SHALL sanitize all input parameters against an allowlisted character set. THE SYSTEM SHALL NOT use unsanitized input parameters in any database operation.",
+        securityPrimitive: "input-validation",
+        rationale: "Defense-in-depth: allowlist validation reduces attack surface even when parameterized queries are in place.",
+      },
+    ],
+  },
+  {
+    id: "CWE-78",
+    name: "OS Command Injection",
+    description: "Improper neutralization of special elements used in an OS command",
+    owaspCategory: "A03:2021-Injection",
+    severity: "critical",
+    tags: ["injection", "command", "os", "input-validation"],
+    triggerConditions: [
+      {
+        id: "TC-78-1",
+        description: "Requirement executes system commands with user-supplied parameters",
+        keywords: ["execute", "run", "command", "process", "shell", "script", "invoke", "spawn"],
+        semanticPatterns: [
+          "run.*command",
+          "execute.*script",
+          "invoke.*process",
+          "system.*call.*with.*input",
+          "spawn.*process",
+        ],
+        dataFlowIndicators: ["user input → system command"],
+      },
+    ],
+    earsConstraints: [
+      {
+        id: "EC-78-1",
+        pattern: "ubiquitous",
+        template: "THE SYSTEM SHALL NOT pass user-supplied input directly to OS command interpreters. THE SYSTEM SHALL use parameterized APIs or allowlisted command arguments exclusively.",
+        securityPrimitive: "command-parameterization",
+        rationale: "Command injection allows arbitrary code execution on the server.",
+      },
+    ],
+  },
+  {
+    id: "CWE-79",
+    name: "Cross-Site Scripting (XSS)",
+    description: "Improper neutralization of input during web page generation",
+    owaspCategory: "A03:2021-Injection",
+    severity: "high",
+    tags: ["injection", "xss", "output-encoding", "csp", "browser"],
+    triggerConditions: [
+      {
+        id: "TC-79-1",
+        description: "Requirement renders user-supplied content in a browser",
+        keywords: ["display", "render", "show", "present", "output", "page", "template", "html", "view"],
+        semanticPatterns: [
+          "display.*user.*content",
+          "render.*submitted.*data",
+          "show.*comment|review|message|post",
+          "present.*profile.*information",
+          "output.*to.*page",
+        ],
+        dataFlowIndicators: ["user input → HTML output", "stored content → browser rendering"],
+      },
+      {
+        id: "TC-79-2",
+        description: "Requirement involves rich text or markdown rendering",
+        keywords: ["markdown", "rich text", "html content", "formatted text", "wysiwyg"],
+        semanticPatterns: [
+          "render.*markdown",
+          "display.*rich text",
+          "allow.*html.*formatting",
+        ],
+      },
+    ],
+    earsConstraints: [
+      {
+        id: "EC-79-1",
+        pattern: "ubiquitous",
+        template: "THE SYSTEM SHALL encode all user-supplied content using context-appropriate output encoding before rendering. THE SYSTEM SHALL apply a Content Security Policy header on all responses.",
+        securityPrimitive: "output-encoding",
+        rationale: "Context-aware encoding neutralizes script injection at the rendering boundary.",
+      },
+      {
+        id: "EC-79-2",
+        pattern: "event-driven",
+        template: "WHEN user-supplied content is rendered in the browser, THE SYSTEM SHALL sanitize the content through a proven HTML sanitization library that strips all script-executable elements and event handlers.",
+        securityPrimitive: "html-sanitization",
+        rationale: "Sanitization removes dangerous constructs while preserving safe formatting.",
+      },
+    ],
+  },
+  {
+    id: "CWE-611",
+    name: "XML External Entity (XXE)",
+    description: "Improper restriction of XML external entity reference",
+    owaspCategory: "A05:2021-Security Misconfiguration",
+    severity: "high",
+    tags: ["injection", "xml", "xxe", "parser-configuration"],
+    triggerConditions: [
+      {
+        id: "TC-611-1",
+        description: "Requirement parses XML input",
+        keywords: ["xml", "parse", "import", "feed", "soap", "svg", "document"],
+        semanticPatterns: [
+          "parse.*xml",
+          "import.*xml.*document",
+          "process.*xml.*feed",
+          "accept.*xml.*input",
+          "upload.*svg",
+        ],
+      },
+    ],
+    earsConstraints: [
+      {
+        id: "EC-611-1",
+        pattern: "ubiquitous",
+        template: "THE SYSTEM SHALL disable external entity resolution and DTD processing in all XML parsers before processing any input.",
+        securityPrimitive: "xxe-prevention",
+        rationale: "External entity resolution enables file disclosure and SSRF attacks through crafted XML.",
+      },
+    ],
+  },
+  {
+    id: "CWE-94",
+    name: "Code Injection",
+    description: "Improper control of generation of code",
+    owaspCategory: "A03:2021-Injection",
+    severity: "critical",
+    tags: ["injection", "code-execution", "eval", "template"],
+    triggerConditions: [
+      {
+        id: "TC-94-1",
+        description: "Requirement evaluates or executes dynamically constructed code",
+        keywords: ["eval", "execute", "dynamic", "template", "expression", "formula", "script"],
+        semanticPatterns: [
+          "evaluate.*expression",
+          "execute.*dynamic.*code",
+          "process.*template.*with.*user",
+          "compute.*formula",
+          "run.*user.*script",
+        ],
+      },
+    ],
+    earsConstraints: [
+      {
+        id: "EC-94-1",
+        pattern: "ubiquitous",
+        template: "THE SYSTEM SHALL NOT evaluate user-supplied strings as executable code. THE SYSTEM SHALL use a sandboxed expression parser with an explicit allowlist of permitted operations.",
+        securityPrimitive: "no-dynamic-eval",
+        rationale: "Dynamic code evaluation from user input enables arbitrary code execution.",
+      },
+    ],
+  },
+  {
+    id: "CWE-917",
+    name: "Expression Language Injection",
+    description: "Improper neutralization of special elements used in an expression language statement",
+    owaspCategory: "A03:2021-Injection",
+    severity: "high",
+    tags: ["injection", "expression-language", "template", "server-side"],
+    triggerConditions: [
+      {
+        id: "TC-917-1",
+        description: "Requirement uses server-side template engines with user input",
+        keywords: ["template", "render", "expression", "interpolate", "format string"],
+        semanticPatterns: [
+          "render.*template.*with.*user",
+          "interpolate.*user.*data.*into.*template",
+          "format.*message.*with.*user.*input",
+        ],
+      },
+    ],
+    earsConstraints: [
+      {
+        id: "EC-917-1",
+        pattern: "ubiquitous",
+        template: "THE SYSTEM SHALL NOT interpolate user-supplied values directly into server-side template expressions. THE SYSTEM SHALL pass user data exclusively through the template engine's designated data-binding context.",
+        securityPrimitive: "template-injection-prevention",
+        rationale: "Server-side template injection can lead to remote code execution.",
+      },
+    ],
+  },
+  {
+    id: "CWE-90",
+    name: "LDAP Injection",
+    description: "Improper neutralization of special elements used in an LDAP query",
+    owaspCategory: "A03:2021-Injection",
+    severity: "high",
+    tags: ["injection", "ldap", "directory", "input-validation"],
+    triggerConditions: [
+      {
+        id: "TC-90-1",
+        description: "Requirement queries an LDAP or directory service using external input",
+        keywords: ["ldap", "directory", "distinguished name", "active directory", "bind", "organizational unit"],
+        semanticPatterns: [
+          "query.*ldap",
+          "search.*directory.*by",
+          "look up.*user.*in.*directory",
+          "authenticate.*against.*directory",
+        ],
+        dataFlowIndicators: ["user input → LDAP filter"],
+      },
+    ],
+    earsConstraints: [
+      {
+        id: "EC-90-1",
+        pattern: "ubiquitous",
+        template: "THE SYSTEM SHALL escape all user-supplied values placed into LDAP search filters and distinguished names according to RFC 4515 encoding rules.",
+        securityPrimitive: "ldap-escaping",
+        rationale: "Unescaped LDAP metacharacters let an attacker rewrite the filter to bypass authentication or enumerate the directory.",
+      },
+      {
+        id: "EC-90-2",
+        pattern: "event-driven",
+        template: "WHEN {actor} submits {input_description}, THE SYSTEM SHALL validate the value against an allowlisted character set that excludes LDAP filter metacharacters.",
+        securityPrimitive: "input-validation",
+        rationale: "Allowlist validation blocks injection payloads before they reach the directory query.",
+      },
+    ],
+  },
+  {
+    id: "CWE-643",
+    name: "XPath Injection",
+    description: "Improper neutralization of special elements used in an XPath expression",
+    owaspCategory: "A03:2021-Injection",
+    severity: "high",
+    tags: ["injection", "xpath", "xml", "input-validation"],
+    triggerConditions: [
+      {
+        id: "TC-643-1",
+        description: "Requirement evaluates an XPath expression built from user input",
+        keywords: ["xpath", "xml query", "xml document", "select node", "xml lookup"],
+        semanticPatterns: [
+          "query.*xml.*with",
+          "evaluate.*xpath",
+          "select.*node.*by.*user",
+          "look up.*in.*xml.*document",
+        ],
+        dataFlowIndicators: ["user input → XPath expression"],
+      },
+    ],
+    earsConstraints: [
+      {
+        id: "EC-643-1",
+        pattern: "ubiquitous",
+        template: "THE SYSTEM SHALL evaluate XPath expressions using precompiled queries that bind user input as typed variables rather than through string concatenation.",
+        securityPrimitive: "xpath-parameterization",
+        rationale: "Parameterized XPath separates the query structure from user data, preventing expression tampering.",
+      },
+    ],
+  },
+  {
+    id: "CWE-113",
+    name: "HTTP Response Splitting",
+    description: "Improper neutralization of CRLF sequences in HTTP response headers",
+    owaspCategory: "A03:2021-Injection",
+    severity: "high",
+    tags: ["injection", "http", "crlf", "header", "input-validation"],
+    triggerConditions: [
+      {
+        id: "TC-113-1",
+        description: "Requirement writes user-supplied input into an HTTP response header",
+        keywords: ["header", "http response", "set-cookie", "location header", "redirect", "content-type"],
+        semanticPatterns: [
+          "set.*header.*with.*user",
+          "add.*response header.*from.*input",
+          "write.*user.*value.*into.*header",
+          "reflect.*parameter.*in.*header",
+        ],
+        dataFlowIndicators: ["user input → HTTP header"],
+      },
+    ],
+    earsConstraints: [
+      {
+        id: "EC-113-1",
+        pattern: "ubiquitous",
+        template: "THE SYSTEM SHALL strip or reject carriage-return and line-feed characters in any user-supplied value written into an HTTP response header.",
+        securityPrimitive: "crlf-neutralization",
+        rationale: "CRLF sequences in a header let an attacker inject headers or split the response to poison caches and forge content.",
+      },
+    ],
+  },
+  {
+    id: "CWE-98",
+    name: "File Inclusion (Remote/Local)",
+    description: "Improper control of the filename used in an include, require, or module-load statement",
+    owaspCategory: "A03:2021-Injection",
+    severity: "critical",
+    tags: ["injection", "file-inclusion", "path", "module", "input-validation"],
+    triggerConditions: [
+      {
+        id: "TC-98-1",
+        description: "Requirement includes, imports, or loads a module or file whose path derives from user input",
+        keywords: ["include", "require", "import module", "load file", "dynamic import", "plugin path", "template path"],
+        semanticPatterns: [
+          "include.*file.*from.*input",
+          "load.*module.*by.*name",
+          "import.*based on.*user",
+          "resolve.*template.*path.*from.*parameter",
+        ],
+        dataFlowIndicators: ["user input → include path", "user input → module name"],
+      },
+    ],
+    earsConstraints: [
+      {
+        id: "EC-98-1",
+        pattern: "ubiquitous",
+        template: "THE SYSTEM SHALL resolve includable files and loadable modules exclusively from a fixed allowlist of identifiers mapped to server-controlled paths.",
+        securityPrimitive: "inclusion-allowlist",
+        rationale: "Allowlisting the loadable set prevents an attacker from directing an include or import to arbitrary local or remote code.",
+      },
+      {
+        id: "EC-98-2",
+        pattern: "unwanted-behavior",
+        template: "IF an include or module path resolves outside the designated module directory, THEN THE SYSTEM SHALL reject the request and log the attempt.",
+        securityPrimitive: "path-confinement",
+        rationale: "Confining resolution to a known directory blocks traversal and remote-inclusion payloads.",
+      },
+    ],
+  },
+  {
+    id: "CWE-470",
+    name: "Unsafe Reflection",
+    description: "Use of externally-controlled input to select classes or code to instantiate or invoke",
+    owaspCategory: "A03:2021-Injection",
+    severity: "high",
+    tags: ["injection", "reflection", "code-execution", "input-validation"],
+    triggerConditions: [
+      {
+        id: "TC-470-1",
+        description: "Requirement selects a class, handler, or code path by a name derived from user input",
+        keywords: ["reflection", "class name", "instantiate", "load class", "handler", "factory", "plugin", "action name"],
+        semanticPatterns: [
+          "instantiate.*class.*from.*input",
+          "select.*handler.*by.*name",
+          "load.*type.*based on.*parameter",
+          "dispatch.*to.*named.*action",
+        ],
+        dataFlowIndicators: ["user input → class selection"],
+      },
+    ],
+    earsConstraints: [
+      {
+        id: "EC-470-1",
+        pattern: "ubiquitous",
+        template: "THE SYSTEM SHALL map user-supplied selectors to classes or code paths exclusively through a fixed allowlist rather than instantiating types named directly by input.",
+        securityPrimitive: "reflection-allowlist",
+        rationale: "Reflecting on attacker-named types can instantiate dangerous classes or invoke unintended code paths.",
+      },
+    ],
+  },
+];
