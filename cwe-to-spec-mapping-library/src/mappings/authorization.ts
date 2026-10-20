@@ -17,10 +17,10 @@ export const authorizationMappings: CWEMapping[] = [
           "user.*access.*resource",
           "return.*data.*for.*user",
           "view.*record",
-          "update.*profile|account|settings",
+          "update.*(?:profile|account|settings)",
           "delete.*resource",
           "modify.*owned.*by",
-          "fetch.*by.*id|identifier",
+          "fetch.*by.*(?:id|identifier)",
         ],
         dataFlowIndicators: ["user-supplied ID → resource lookup", "request → data belonging to principal"],
       },
@@ -36,7 +36,7 @@ export const authorizationMappings: CWEMapping[] = [
       {
         id: "EC-862-2",
         pattern: "unwanted-behavior",
-        template: "IF the requesting principal does not own or have explicit permission to access the resource, THEN THE SYSTEM SHALL return HTTP 403 with no data payload.",
+        template: "IF the requesting principal does not own or have explicit permission to access the resource, THEN THE SYSTEM SHALL reject the request with an authorization error that carries no data of the resource.",
         securityPrimitive: "authorization-denial",
         rationale: "Fail-closed authorization prevents any data leakage on unauthorized access.",
       },
@@ -67,7 +67,7 @@ export const authorizationMappings: CWEMapping[] = [
       {
         id: "EC-863-1",
         pattern: "event-driven",
-        template: "WHILE {operation} on {resource} is being executed for {actor}, THE SYSTEM SHALL verify the actor holds the {required_role} role. WHILE {operation} on {resource} is being executed for {actor}, THE SYSTEM SHALL verify the role assignment is current.",
+        template: "WHEN {actor} requests to {operation}, THE SYSTEM SHALL verify the actor holds the {required_role} role. WHEN {actor} requests to {operation}, THE SYSTEM SHALL verify the role assignment is current.",
         securityPrimitive: "role-verification",
         rationale: "Stale or incorrectly checked role assignments enable privilege escalation.",
       },
@@ -112,6 +112,7 @@ export const authorizationMappings: CWEMapping[] = [
     owaspCategory: "A01:2021-Broken Access Control",
     severity: "high",
     tags: ["authorization", "csrf", "state-mutation"],
+    requiresContext: ["http"],
     triggerConditions: [
       {
         id: "TC-352-1",

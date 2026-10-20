@@ -11,14 +11,18 @@ async function main() {
 
 Reads EARS-format requirement files and hardens them in place.
 
-Each input file is edited in place: requirement lines are normalized to strict
-EARS, requirement-specific security constraints are nested beneath the
-requirement they guard, and cross-cutting constraints are consolidated into a
-single "Security Baseline (Cross-Cutting)" section. No sidecar files are written;
-any "*_hardened.md" or "*final_requirements.md" left by an older run is removed.
+Each input file is edited in place and only by adding lines: requirement
+lines are never changed, split, re-tagged or moved. Requirement-specific
+security constraints are inserted beneath the requirement they guard, and
+cross-cutting constraints are consolidated into a single "Security Baseline
+(Cross-Cutting)" section. Every added line is printed, so the changes can be
+reviewed without version control. No copies or sidecar files are written; any
+"*_hardened.md" or "*final_requirements.md" left by an older run is removed.
 
-Re-running is idempotent — constraints already stated are recognized, not
-re-added. Diff against version control to review what hardening changed.
+Re-running is incremental: a hidden review marker at the end of the file
+records the requirements already hardened, so a re-run hardens only
+requirements added or changed since, and does not re-propose constraints a
+reviewer removed from requirements already reviewed.
 
 If a directory is given, all .md files in it are processed.
 
@@ -35,6 +39,16 @@ Options:
   --semantic-all        With --semantic-candidates, surface every sub-threshold
                         CWE, not just authorization gaps (noisier, full sweep).
   --semantic-floor <n>  Lower bound for surfacing candidates (0-1, default: 0.05)
+  --dry-run             Print the lines that would be added; write nothing.
+  --check               Validate only, write nothing: report requirements that
+                        are not strict EARS and malformed [SECURITY: ...] lines
+                        (two obligations on one line, no actor, missing or
+                        duplicate ID). Exits 1 if anything is reported. Run it
+                        after editing constraint lines by hand.
+  --mark-reviewed       Record every current requirement as reviewed without
+                        adding constraints. Use once on a file hardened by an
+                        older version (reported as "no review record") so
+                        later runs harden only what is added afterwards.
   -h, --help            Show this help
 
 Examples:
@@ -42,6 +56,7 @@ Examples:
   harden-requirements .kiro/specs/
   harden-requirements req1.md req2.md --threshold 0.5
   harden-requirements requirements.md --semantic-candidates
+  harden-requirements requirements.md --dry-run
 `);
     process.exit(0);
   }
@@ -52,6 +67,9 @@ Examples:
   let showSemanticCandidates = false;
   let semanticCandidateScope: "authz" | "all" = "authz";
   let semanticCandidateFloor = 0.05;
+  let dryRun = false;
+  let markReviewed = false;
+  let check = false;
   const inputArgs: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
@@ -68,6 +86,15 @@ Examples:
       semanticCandidateScope = "all";
     } else if (args[i] === "--semantic-floor" && args[i + 1]) {
       semanticCandidateFloor = parseFloat(args[++i]);
+    } else if (args[i] === "--dry-run") {
+      dryRun = true;
+    } else if (args[i] === "--mark-reviewed") {
+      markReviewed = true;
+    } else if (args[i] === "--check") {
+      check = true;
+    } else if (args[i].startsWith("--")) {
+      console.error(`Error: unknown option ${args[i]}. See --help.`);
+      process.exit(1);
     } else {
       inputArgs.push(args[i]);
     }
@@ -86,6 +113,9 @@ Examples:
     includeLowSeverity,
     semanticCandidateFloor,
     semanticCandidateScope,
+    dryRun,
+    markReviewed,
+    check,
   });
 
   if (results.length === 0) {
@@ -93,60 +123,140 @@ Examples:
     process.exit(1);
   }
 
-  let splitCount = 0;
   let notStrictCount = 0;
   let anchorCount = 0;
+  let constraintIssueCount = 0;
+  let specializeCount = 0;
+
+  // Problems in [SECURITY: ...] lines already in the file are reported in every
+  // mode, since a file that is skipped is exactly the one a reviewer edited.
+  const printConstraintWarnings = (result: (typeof results)[number]) => {
+    constraintIssueCount += result.constraintWarnings.length;
+    for (const w of result.constraintWarnings) {
+      console.log(`         [WARN] ${w.location} → ${w.constraintId}: constraint line ${w.message}`);
+    }
+  };
+  const verb = dryRun ? "would be added" : "added";
 
   for (const result of results) {
-    if (result.skipped) {
-      console.log(`  [SKIP] ${basename(result.inputPath)} is already hardened — left untouched.`);
-      console.log(`         To harden newly-added requirements, re-run on the original spec`);
-      console.log(`         (e.g. from version control) or remove existing SEC- lines first.`);
-      continue;
+    const name = basename(result.inputPath);
+    switch (result.mode) {
+      case "checked": {
+        const notStrict = result.sourceWarnings;
+        notStrictCount += notStrict.length;
+        const issues = notStrict.length + result.constraintWarnings.length;
+        console.log(`  [CHECK] ${name}: ${result.requirementsFound} requirements, ${issues} issue(s). Nothing was written.`);
+        for (const warning of notStrict) {
+          console.log(`         [WARN] ${warning.requirementId}: ${warning.message}`);
+        }
+        printConstraintWarnings(result);
+        continue;
+      }
+      case "unrecorded":
+        console.log(`  [SKIP] ${name} was hardened by an older version that kept no review record — left untouched.`);
+        console.log(`         Run once with --mark-reviewed to record its current requirements as reviewed;`);
+        console.log(`         later runs then harden only requirements added after that.`);
+        printConstraintWarnings(result);
+        continue;
+      case "up-to-date":
+        console.log(`  [SKIP] ${name} is up to date — every requirement was already hardened.`);
+        printConstraintWarnings(result);
+        continue;
+      case "marked":
+        console.log(`  [DONE] ${name}: ${result.requirementsFound} requirement(s) recorded as reviewed${dryRun ? " (dry run, not written)" : ""}.`);
+        continue;
     }
 
+    const scope = result.mode === "incremental"
+      ? `${result.report.results.length} new or changed requirement(s) of ${result.requirementsFound}`
+      : `${result.requirementsFound} requirements`;
     const baseline = result.baselineConstraints > 0
-      ? `, ${result.baselineConstraints} cross-cutting baseline constraint(s)`
+      ? `, ${result.baselineConstraints} baseline constraint(s)`
       : "";
-    console.log(`  [DONE] ${basename(result.inputPath)} hardened in place (${result.requirementsFound} requirements${baseline})`);
+    const constraintLines = result.addedLines.filter((l) => l.text.includes("[SECURITY:")).length;
+    console.log(
+      `  [${dryRun ? "DRY RUN" : "DONE"}] ${name}: ${scope} checked; ` +
+        `${constraintLines} constraint line(s) ${verb} under ${result.requirementsHardened} requirement(s)${baseline}. ` +
+        `No existing line was changed.`
+    );
 
     for (const removed of result.removedArtifacts) {
       console.log(`         [CLEANED] removed stale ${basename(removed)}`);
     }
 
-    const splits = result.sourceWarnings.filter((w) => /split into/.test(w.message));
     const notStrict = result.sourceWarnings.filter((w) => /not strict EARS/.test(w.message));
-
-    splitCount += splits.length;
     notStrictCount += notStrict.length;
     anchorCount += result.anchorWarnings.length;
 
-    // Requirements the tool could not make strict EARS are the ones needing a
-    // human, so they are named individually rather than only counted.
+    // Requirements that are not strict EARS need a human, so they are named
+    // individually. They are reported only; the tool never rewrites them.
     for (const warning of notStrict) {
       console.log(`         [WARN] ${warning.requirementId}: ${warning.message}`);
     }
 
     for (const warning of result.anchorWarnings) {
-      console.log(`         [WARN] ${warning.constraintId}: ${warning.message}`);
+      console.log(`         [WARN] ${warning.requirementId} → ${warning.constraintId}: ${warning.message}`);
+    }
+
+    specializeCount += result.specializationWarnings.length;
+    for (const w of result.specializationWarnings) {
+      console.log(`         [WARN] ${w.location} → ${w.constraintId}: ${w.message}`);
+    }
+
+    printConstraintWarnings(result);
+
+    if (result.foldedDuplicates > 0) {
+      console.log(
+        `         [INFO] ${result.foldedDuplicates} constraint line(s) not repeated: the same clause was ` +
+          `already added under an earlier criterion of the same requirement.`
+      );
+    }
+
+    if (result.suppressedConstraints.length > 0) {
+      const byReason = new Map<string, Set<string>>();
+      for (const s of result.suppressedConstraints) {
+        const key = `${s.cweId}: ${s.reason}`;
+        byReason.set(key, (byReason.get(key) ?? new Set()).add(s.requirementId));
+      }
+      console.log(`         [INFO] Withheld as not applicable to this spec:`);
+      for (const [reason, ids] of byReason) {
+        console.log(`           ${reason} (${ids.size} requirement(s))`);
+      }
+    }
+
+    if (result.addedLines.length > 0) {
+      console.log(`\n  Lines ${verb} to ${name} (by the original line they follow):`);
+      for (const line of result.addedLines) {
+        if (line.text.trim()) console.log(`    after ${line.after}: ${line.text.trim()}`);
+      }
+      console.log("");
     }
   }
 
-  const skipped = results.filter((r) => r.skipped).length;
-  const processed = results.length - skipped;
-  console.log(
-    `\nHardening complete. ${processed} file(s) hardened` +
-      (skipped > 0 ? `, ${skipped} already hardened (skipped).` : ".")
-  );
-
-  if (splitCount > 0) {
-    console.log(`  ${splitCount} compound requirement(s) split into atomic requirements.`);
+  const changed = results.filter((r) => !r.skipped).length;
+  if (check) {
+    console.log(`\nCheck complete. ${results.length} file(s) checked; nothing was written.`);
+  } else {
+    console.log(
+      `\nHardening complete. ${changed} file(s) ${dryRun ? "previewed (dry run, nothing written)" : "updated in place"}` +
+        (changed < results.length ? `, ${results.length - changed} left untouched.` : ".")
+    );
   }
+
   if (notStrictCount > 0) {
-    console.log(`  ${notStrictCount} requirement(s) could not be normalized to strict EARS — review the warnings above.`);
+    console.log(`  ${notStrictCount} requirement(s) are not strict EARS — review the warnings above. They were not changed.`);
   }
   if (anchorCount > 0) {
-    console.log(`  ${anchorCount} constraint(s) may be anchored to the wrong requirement — review the warnings above.`);
+    console.log(`  ${anchorCount} constraint group(s) may be anchored to the wrong requirement — review the warnings above.`);
+  }
+  if (specializeCount > 0) {
+    console.log(`  ${specializeCount} constraint(s) use generic placeholder text and must be specialized — review the warnings above.`);
+  }
+  if (constraintIssueCount > 0) {
+    console.log(`  ${constraintIssueCount} [SECURITY: ...] line(s) are malformed — review the warnings above.`);
+  }
+  if (check && (notStrictCount > 0 || constraintIssueCount > 0)) {
+    process.exitCode = 1;
   }
 
   if (showSemanticCandidates) {

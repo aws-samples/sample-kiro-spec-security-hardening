@@ -7,6 +7,8 @@ import {
   getMappingsBySeverity,
 } from "../src/mappings/index.js";
 import { toValidEARSClauses } from "../src/engine/ears-normalizer.js";
+import { fillTemplate, resolveTemplate } from "../src/engine/template-filler.js";
+import type { SpecContext } from "../src/types/index.js";
 
 describe("Mappings registry", () => {
   it("has at least 40 CWE mappings", () => {
@@ -60,35 +62,41 @@ describe("Mappings registry", () => {
     // template that cannot pass it is a defect in the template itself. Asserting
     // this over the whole registry catches a regression at the source rather
     // than as unparseable output in someone's requirements document.
-    const fill = (template: string) =>
-      template
-        .replace(/\{actor\}/g, "a user")
-        .replace(/\{operation\}/g, "the operation")
-        .replace(/\{resource\}/g, "the resource")
-        .replace(/\{input_description\}/g, "the input")
-        .replace(/\{target_state\}/g, "the target state")
-        .replace(/\{target\}/g, "the target")
-        .replace(/\{required_role\}/g, "the required")
-        .replace(/\{high_value_operation\}/g, "the operation")
-        .replace(/\{configured_limit\}/g, "the configured limit");
+    // Every wording a spec can receive: the default, each context variant,
+    // and each language's examples, filled exactly as the engine fills them.
+    const contexts: SpecContext[] = [
+      { features: [], outOfScope: [] },
+      ...(["sql-database", "http", "html", "xml", "ldap"] as const).map((feature) => ({
+        features: [feature],
+        outOfScope: [],
+      })),
+      ...(["go", "java", "python", "javascript", "dotnet", "ruby", "php"] as const).map((language) => ({
+        features: [],
+        outOfScope: [],
+        languages: [language],
+      })),
+    ];
 
     const failures: string[] = [];
 
     for (const mapping of allMappings) {
       for (const constraint of mapping.earsConstraints) {
-        const { clauses, rejected } = toValidEARSClauses(fill(constraint.template));
+        for (const context of contexts) {
+          const { text } = fillTemplate(resolveTemplate(constraint, context));
+          const { clauses, rejected } = toValidEARSClauses(text);
 
-        if (rejected.length > 0) {
-          failures.push(
-            `${mapping.id}/${constraint.id}: ${rejected
-              .map((r) => r.errors.join(", "))
-              .join(" | ")}`
-          );
+          if (rejected.length > 0) {
+            failures.push(
+              `${mapping.id}/${constraint.id}: ${rejected
+                .map((r) => r.errors.join(", "))
+                .join(" | ")}`
+            );
+          }
+
+          // A template must yield at least one clause; emitting none would
+          // drop a security constraint silently.
+          expect(clauses.length).toBeGreaterThan(0);
         }
-
-        // A template must yield at least one clause; emitting none would drop a
-        // security constraint silently.
-        expect(clauses.length).toBeGreaterThan(0);
       }
     }
 
@@ -146,5 +154,64 @@ describe("Mappings registry", () => {
       expect(results.length).toBeGreaterThan(0);
       expect(results.every((m) => m.severity === "critical")).toBe(true);
     });
+  });
+});
+
+describe("Trigger pattern hygiene", () => {
+  it("scopes every alternation inside a group", () => {
+    // "search.*by.*name|id" means (search.*by.*name)|id to a regex engine, so the
+    // bare "id" alternative matched any requirement containing "id".
+    for (const mapping of allMappings) {
+      for (const trigger of mapping.triggerConditions) {
+        for (const pattern of trigger.semanticPatterns) {
+          const topLevel = pattern.replace(/\([^()]*\)/g, "");
+          expect(topLevel, `${mapping.id}: ${pattern}`).not.toContain("|");
+        }
+      }
+    }
+  });
+
+  it("states no HTTP status code outside HTTP-only mappings", () => {
+    for (const mapping of allMappings) {
+      if (mapping.requiresContext?.includes("http")) continue;
+      for (const constraint of mapping.earsConstraints) {
+        expect(constraint.template, constraint.id).not.toMatch(/\bHTTP \d{3}\b/);
+        for (const variant of constraint.variants ?? []) {
+          if (variant.when === "http") continue;
+          expect(variant.template, constraint.id).not.toMatch(/\bHTTP \d{3}\b/);
+        }
+      }
+    }
+  });
+});
+
+describe("Context-neutral default wording", () => {
+  it("names no web, database or language-specific artifact in a default template", () => {
+    // Wording that assumes one technology belongs in a variant (or the mapping
+    // is gated on that technology), so a spec without it gets neutral text.
+    const assumptions = /\b(?:web-accessible|document root|database schema|Java ObjectInputStream|Python pickle)\b/i;
+    for (const mapping of allMappings) {
+      for (const constraint of mapping.earsConstraints) {
+        const gated = [...(mapping.requiresContext ?? []), ...(constraint.requiresContext ?? [])];
+        if (gated.length > 0) continue;
+        expect(constraint.template, constraint.id).not.toMatch(assumptions);
+      }
+    }
+  });
+});
+
+describe("Placeholder grammar", () => {
+  it("writes {operation} only after 'to', since it holds a verb phrase", () => {
+    // The slot is filled with the requirement's verb phrase ("assign the
+    // room"); "WHILE {operation} on ..." produced "WHILE assign the room on".
+    for (const mapping of allMappings) {
+      for (const constraint of mapping.earsConstraints) {
+        for (const template of [constraint.template, ...(constraint.variants ?? []).map((v) => v.template)]) {
+          for (const match of template.matchAll(/(\S+)\s+\{operation\}/g)) {
+            expect(match[1], `${constraint.id}: ${template}`).toBe("to");
+          }
+        }
+      }
+    }
   });
 });

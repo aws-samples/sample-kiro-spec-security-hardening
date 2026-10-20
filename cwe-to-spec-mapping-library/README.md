@@ -12,11 +12,12 @@ Security vulnerabilities are cheapest to fix at the requirements phase. Yet most
 
 ## Installation
 
-`@sis/cwe-to-spec-mapping` is not published to a registry. Build it from source in this workspace:
+`@sis/cwe-to-spec-mapping` is not published to a registry. It ships prebuilt in
+`dist/` with no runtime dependencies, so the CLI runs with Node.js alone. To
+rebuild after changing the source (and before committing):
 
 ```bash
-cd src/KiroSecureSpecHardening/cwe-to-spec-mapping-library
-npm install   # installs devDependencies and runs the build via `prepare`
+npm ci --ignore-scripts && npm run build
 ```
 
 To consume it from another local project, install it by path:
@@ -36,7 +37,7 @@ cd src/KiroSecureSpecHardening/cwe-to-spec-mapping-library
 ### CLI Usage
 
 ```bash
-# Harden a single requirements file (compiled CLI, built by `npm install`)
+# Harden a single requirements file (prebuilt compiled CLI)
 node dist/cli/harden-requirements.js /abs/path/to/requirements.md
 
 # Harden all markdown files in a directory
@@ -48,6 +49,12 @@ node dist/cli/harden-requirements.js /abs/path/to/requirements.md --threshold 0.
 # Print sub-threshold authorization gaps for semantic review
 node dist/cli/harden-requirements.js /abs/path/to/project/.kiro/specs/ --semantic-candidates
 
+# Preview what would be added without writing anything
+node dist/cli/harden-requirements.js /abs/path/to/requirements.md --dry-run
+
+# Validate requirements and [SECURITY: ...] lines only (exit 1 on problems)
+node dist/cli/harden-requirements.js /abs/path/to/requirements.md --check
+
 # Fallback: from source, no build step (needs the tsx devDependency)
 npm run harden -- /abs/path/to/project/.kiro/specs/
 ```
@@ -55,41 +62,92 @@ npm run harden -- /abs/path/to/project/.kiro/specs/
 To get a global `harden-requirements` command, run `npm link` once in this
 directory.
 
-The CLI hardens each input file **in place** — no sidecar files. It:
+The CLI hardens each input file **in place**, and only by adding lines — no
+copies, no sidecar files. Every original line, requirement lines included,
+stays exactly as written; the CLI refuses to write if one would not. It:
 
-- normalizes each requirement line to strict EARS,
-- nests **requirement-specific** constraints as sub-numbered EARS items under the
-  requirement they harden — each written in the parent's own subject (e.g. `THE
-  Cron_SDK SHALL`, not the canonical `THE SYSTEM SHALL`) so the constraint reads
-  in the spec's voice and stays traceable to the component it guards, and
+- inserts **requirement-specific** constraints as sub-numbered EARS items under
+  the requirement they harden — each written in the parent's own subject (e.g.
+  `THE Cron_SDK SHALL`, not the canonical `THE SYSTEM SHALL`) so the constraint
+  reads in the spec's voice and stays traceable to the component it guards,
 - consolidates **cross-cutting** constraints (those a clause would otherwise
-  repeat under most requirements — parameterized queries, authentication, generic
-  input validation) into a single `## Security Baseline (Cross-Cutting)` section
-  at the end, stated once.
-
-Any `*_hardened.md` or `*final_requirements.md` left by an older two-file run is
-removed. Strip the `[SECURITY: ...]` lines and the baseline section and you get
-the original file back, so it is easy to see what hardening changed — or just
-diff against version control.
+  repeat under most requirements) into a single
+  `## Security Baseline (Cross-Cutting)` section at the end, stated once,
+- records the requirements it hardened in a hidden
+  `<!-- spec-it-safe:reviewed … -->` comment at the end of the file, and
+- prints every line it added, by the original line it follows.
 
 ```markdown
 1. WHEN a user submits a search query, THE SYSTEM SHALL return matching results from the database.
-   1.1. SEC-…-EC-89-2-1 [SECURITY: input-validation] WHEN a user submits a search query, THE SYSTEM SHALL sanitize all input parameters against an allowlisted character set.
+   1.1. SEC-REQ-1.1-EC-89-2-1 [SECURITY: input-validation] WHEN a user submits a search query, THE SYSTEM SHALL validate each input parameter against the format rules defined for its field.
 2. THE SYSTEM SHALL accept images up to 5MB in size.
 
 ## Security Baseline (Cross-Cutting)
 
 - SEC-BASELINE-1 [SECURITY: parameterized-query] THE SYSTEM SHALL execute all database queries using parameterized statements or prepared statements only.
-- SEC-BASELINE-2 [SECURITY: authentication-required] WHILE any request to this endpoint is being processed, THE SYSTEM SHALL require a valid authenticated session or signed token.
 ```
 
-Here requirement 1 picked up a contextual input-validation clause while the
-parameterized-query and authentication constraints — which applied to nearly
-every requirement — were lifted to the baseline. Re-running the CLI on an
-already-hardened file is a **no-op**: it detects the `[SECURITY: ...]` tags and
-leaves the file untouched, since the EARS-split output does not round-trip back
-through the parser. To harden requirements added after a hardening pass, run
-against the pre-hardening spec (e.g. from version control). See
+Constraint IDs name the requirement they harden: `SEC-REQ-1.1-…` is criterion 1
+of "Requirement 1". A requirement with its own ID (`REQ-F-015: …`) keeps it
+(`SEC-REQ-F-015-…`). Warnings name requirements the same way, with the line
+number.
+
+**Context.** Constraints are chosen against the whole document, not one
+requirement at a time. A mapping that needs a SQL database, HTTP, a browser,
+XML or LDAP is withheld when the spec shows no sign of one, and a constraint is
+withheld when the spec declares its topic out of scope ("TLS is out of
+scope"). Withheld constraints are listed as `[INFO]`. Keywords and patterns
+match whole words, so "logout" is not "log" and "invalid" is not "id".
+
+**Wording.** A template is resolved for the spec before it is filled
+(`resolveTemplate`, `fillTemplate`). Its default wording is
+technology-neutral; a `variants` entry supplies the wording for specs that
+have a feature (`http`, `sql-database`, …). An `{<concept>_examples}` slot
+names the APIs of the languages the spec states (`detectSpecContext` finds Go,
+Java, Python, JavaScript/TypeScript, .NET, Ruby and PHP), with a cross-language
+default otherwise. A trailing "before …" moves into a leading trigger only when
+it names an event ("before executing the operation", "before the token
+expires"). A bare noun ("before use") stays in the response, and a one-word
+trigger such as `WHEN use,` is rejected. Placeholders the requirement cannot
+fill fall back to generic text and are reported (`genericSlots` on the
+proposal, `[WARN] … built with generic text` in the CLI). The semantic-review
+list shows candidates filled in the same way, in the requirement's own
+subject.
+
+**Placement.** Within one "Requirement N" section, a clause proposed under
+several criteria is written once, under the first (`foldedDuplicates`).
+Baseline constraints use the subject the existing baseline already uses,
+else a requirement subject named as the system (`Chat_System`), else the one
+subject all requirements share, else `THE SYSTEM`.
+
+**Constraint checks.** Every `[SECURITY: ...]` line in the file — generated or
+hand-written — is validated on each run (`constraintWarnings`). The checks
+are: one obligation per line, a named actor, a well-formed trigger, and an ID
+starting `SEC-` that no other line uses. `--check` runs this and the source
+EARS check alone, writes nothing, and exits 1 if anything is reported.
+Hand-added constraints should use `SEC-<requirement>-SEM-<CWE>-<n>` IDs.
+
+**Warnings.** `[WARN] … not strict EARS` names a requirement that does not
+follow EARS; it is reported, never rewritten. Any named component counts as the
+actor (`THE Chat_Server SHALL`), not only `THE SYSTEM`.
+
+The EARS check is structural only. It verifies the trigger keywords and their
+closing commas, `IF … THEN`, a named actor and a `SHALL`, but not whether the
+response is complete. A truncated statement such as `THE Chat_Server SHALL
+create.` (or even `THE Chat_Server SHALL.`) passes without a warning. No
+warning means the requirement is well-formed EARS, not that it says everything
+it should, so read each requirement for completeness yourself. Hardening never
+produces such a statement, because it never splits or rewrites a requirement.
+
+`[WARN] … only on the keywords` flags constraints whose CWE matched on keywords alone, which are the
+ones most likely to be attached to the wrong requirement.
+
+**Re-runs** are incremental. Only requirements added or changed since the last
+run are hardened. Constraints a reviewer deleted are not proposed again for
+requirements already reviewed, and a clause already stated anywhere in the
+file is not added twice. A file with nothing new is left byte-identical. A file
+hardened by an older version (tags but no review comment) is skipped; run it
+once with `--mark-reviewed` to record its current requirements. See
 [`examples/user-management.hardened.md`](examples/user-management.hardened.md)
 for a full worked output.
 
@@ -279,11 +337,17 @@ import { parseRequirementsFromMarkdown, hardenMarkdownFile } from "@sis/cwe-to-s
 // Parse EARS requirements from a markdown file
 const requirements = parseRequirementsFromMarkdown(markdownContent, filePath);
 
-// Harden a file in place (curated, no sidecar files)
-const result = await hardenMarkdownFile("requirements.md", options);
-result.outputPath;          // .../requirements.md  (edited in place; === input)
-result.baselineConstraints; // count lifted into the Security Baseline section
-result.removedArtifacts;    // any stale *_hardened.md / *final_requirements.md removed
+// Harden a file in place (additive only, no sidecar files)
+const result = await hardenMarkdownFile("requirements.md", { dryRun: false });
+result.outputPath;            // .../requirements.md  (edited in place; === input)
+result.mode;                  // "full" | "incremental" | "up-to-date" | "unrecorded" | "marked"
+result.addedLines;            // every added line, with the original line it follows
+result.baselineConstraints;   // count added to the Security Baseline section
+result.suppressedConstraints; // constraints withheld by spec context, with reasons
+result.specializationWarnings; // added constraints built from generic placeholder text
+result.constraintWarnings;    // malformed [SECURITY: ...] lines already in the file
+result.foldedDuplicates;      // clauses not repeated within one requirement section
+result.removedArtifacts;      // any stale *_hardened.md / *final_requirements.md removed
 ```
 
 ## Integration with Kiro

@@ -12,9 +12,10 @@ import type { EARSPattern } from "../types/index.js";
  *     holding three sentences must be atomized into three clauses.
  *   - The unwanted-behavior pattern is `IF <trigger>, THEN the <system> SHALL
  *     <response>`; the `THEN` is not optional.
- *   - Every clause needs an explicit actor (`THE SYSTEM`). Passive constructions
- *     such as "Sensitive fields SHALL be replaced" name no responsible party and
- *     are therefore untestable.
+ *   - Every clause needs an explicit actor: `THE SYSTEM` or a named component
+ *     such as `THE Chat_Server`. Passive constructions such as "Sensitive
+ *     fields SHALL be replaced" name no responsible party and are therefore
+ *     untestable.
  *
  * This module is the single gate every generated clause passes through, so an
  * invalid clause cannot reach an output document.
@@ -27,6 +28,18 @@ import type { EARSPattern } from "../types/index.js";
 const SYSTEM_ACTOR = "THE SYSTEM";
 
 /**
+ * Any explicit actor: `THE SYSTEM` or a named component — `THE Chat_Server`,
+ * `THE Payment Service`. EARS requires the responsible system to be named, not
+ * that it be called "SYSTEM"; specs routinely name the component instead.
+ * Accepting only the literal `THE SYSTEM` reported every requirement of such a
+ * spec as actorless.
+ */
+const NAMED_ACTOR = "(?:THE|The|the)\\s+[A-Za-z][\\w-]*(?:\\s+[A-Z][\\w-]*)*";
+
+/** Matches a clause whose obligation has an explicit actor. */
+const ACTOR_SHALL = new RegExp(`${NAMED_ACTOR}\\s+SHALL\\b`);
+
+/**
  * Trigger body up to the comma that closes it.
  *
  * Greedy on purpose. A trigger may contain commas of its own — "WHEN the user
@@ -37,8 +50,12 @@ const SYSTEM_ACTOR = "THE SYSTEM";
  */
 const TRIGGER_BODY = "(?:[\\s\\S]*,)";
 
-/** Matches the actor that must follow a trigger, with an optional `THEN`. */
-const TRIGGER_TERMINATOR = `\\s*(?:THEN\\s+)?(?=${SYSTEM_ACTOR}\\b|WHEN\\b|it\\s+SHALL\\b)`;
+/**
+ * Matches what must follow a trigger, with an optional `THEN`: the actor, or
+ * a further precondition of a complex requirement (`WHERE <feature>, IF
+ * <trigger>, THEN ...`).
+ */
+const TRIGGER_TERMINATOR = `\\s*(?:THEN\\s+)?(?=${NAMED_ACTOR}\\s+SHALL\\b|WHEN\\b|IF\\b|WHILE\\b|it\\s+SHALL\\b)`;
 
 /**
  * Keywords that open an EARS precondition, mapped to the pattern they select.
@@ -155,6 +172,26 @@ const EMBEDDED_PRECONDITION =
  */
 const GERUND_EVENT = /^(?:any\s+|the\s+|all\s+)?\w+ing\b/i;
 
+/**
+ * An event phrased as a clause with its own subject and verb: "the token
+ * expires", "the session is renewed", "a record has been written".
+ */
+const CLAUSE_EVENT =
+  /^(?:the|a|an|any|each|all|every)\s+(?:\S+\s+)*?(?:(?:is|are|was|were|has|have|had)\b|\w+(?:s|ed)$)/i;
+
+/**
+ * True when a "before <event>" qualifier names an event that can become a
+ * leading trigger. A gerund phrase becomes `WHILE <object> is being <done>`, and
+ * a subject-and-verb clause becomes `WHEN <clause>`. A bare noun — "before use",
+ * "before deployment", "before the deadline" — names no event, so moving it
+ * produces a trigger such as `WHEN use,` that states nothing testable. Such a
+ * qualifier stays where it is, in the response.
+ */
+export function isHoistableEvent(event: string): boolean {
+  const text = event.trim();
+  return GERUND_EVENT.test(text) || CLAUSE_EVENT.test(text);
+}
+
 export interface EARSValidationResult {
   valid: boolean;
   pattern?: EARSPattern;
@@ -180,6 +217,7 @@ export function hoistEmbeddedPrecondition(clause: string): string {
   if (!match) return text;
 
   const event = match[1].trim();
+  if (!isHoistableEvent(event)) return text;
   const body = text.slice(0, match.index).trim().replace(/,$/, "");
   if (!body) return text;
 
@@ -447,12 +485,21 @@ export function normalizeEARSClause(clause: string): string {
 export function classifyEARSPattern(clause: string): EARSPattern | undefined {
   const text = clause.trim();
 
+  // Two different stacked preconditions (WHILE <state>, WHEN <trigger>; WHERE
+  // <feature>, IF <trigger>) => complex. Only the text ahead of the response's
+  // SHALL is a precondition; the same words inside a response are prose.
+  const shallAt = text.search(/\bSHALL\b/i);
+  const preconditions = shallAt >= 0 ? text.slice(0, shallAt) : text;
+  const keywords = new Set(
+    [...preconditions.matchAll(/(?:^|,\s*)(IF|WHEN|WHILE|WHERE)\b/gi)].map((m) =>
+      m[1].toUpperCase()
+    )
+  );
+  if (keywords.size >= 2) return "complex";
+
   const hasWhile = /^WHILE\b/i.test(text);
-  const hasWhen = /\bWHEN\b/i.test(text);
   const hasIf = /^IF\b/i.test(text);
 
-  // Two stacked preconditions (e.g. WHILE <state>, WHEN <trigger>) => complex.
-  if (hasWhile && hasWhen) return "complex";
   if (hasIf) return "unwanted-behavior";
   if (/^WHEN\b/i.test(text)) return "event-driven";
   if (hasWhile) return "state-driven";
@@ -484,7 +531,7 @@ export function validateEARSClause(clause: string): EARSValidationResult {
   }
 
   // Atomicity: a second clause opener after a sentence break means two assertions.
-  if (/\.\s+(?:THE SYSTEM|IF|WHEN|WHILE|WHERE)\b/i.test(text)) {
+  if (new RegExp(`\\.\\s+(?:${NAMED_ACTOR}\\s+SHALL|IF|WHEN|WHILE|WHERE)\\b`).test(text)) {
     errors.push("clause is compound — contains more than one assertion");
   }
 
@@ -495,22 +542,25 @@ export function validateEARSClause(clause: string): EARSValidationResult {
     );
   }
 
-  // A response may not carry its own temporal condition; that belongs in a
-  // WHEN/WHILE precondition, where it is testable.
-  if (EMBEDDED_PRECONDITION.test(text)) {
+  // A response may not carry its own temporal condition when that condition is
+  // an event; it belongs in a WHEN/WHILE precondition, where it is testable. A
+  // bare-noun qualifier ("before use") is part of the response, not an event.
+  const embedded = text.match(EMBEDDED_PRECONDITION);
+  if (embedded && isHoistableEvent(embedded[1])) {
     errors.push(
       "response contains an embedded precondition — move 'before ...' into a WHEN/WHILE clause"
     );
   }
 
   // Every SHALL must be governed by an explicit actor or an AND continuation.
-  const hasNamedActor = new RegExp(`${SYSTEM_ACTOR}\\s+SHALL\\b`).test(text);
-  if (!hasNamedActor && /\bSHALL\b/.test(text)) {
-    errors.push("clause has no explicit actor — 'THE SYSTEM SHALL' is required");
+  if (!ACTOR_SHALL.test(text) && /\bSHALL\b/.test(text)) {
+    errors.push(
+      "clause has no explicit actor — 'THE <system or component> SHALL' is required"
+    );
   }
 
-  // Passive assertion: a SHALL whose subject is not the named actor.
-  const passive = text.match(/(?:^|\.\s+)(?!THE SYSTEM\b)([A-Z][\w\s]*?)\s+SHALL\s+be\b/);
+  // Passive assertion: a SHALL whose subject is not a named actor.
+  const passive = text.match(/(?:^|\.\s+)(?!THE\s)([A-Z][\w\s]*?)\s+SHALL\s+be\b/);
   if (passive) {
     errors.push(`passive assertion with no responsible actor: "${passive[1].trim()}"`);
   }
@@ -559,6 +609,12 @@ export function validateEARSClause(clause: string): EARSValidationResult {
     }
     if (/\b(\w+)\s+\1\b/i.test(triggerBody)) {
       errors.push("malformed trigger — duplicated word");
+    }
+    // A one-word trigger ("WHEN use,", "WHEN deployment,") names no event or
+    // state, so there is no point in time at which to test the obligation.
+    const lastTrigger = triggerBody.replace(/,\s*$/, "").split(/,\s*(?:WHEN|WHILE|WHERE|IF)\b/i).pop() ?? "";
+    if (lastTrigger.trim().split(/\s+/).filter(Boolean).length < 2) {
+      errors.push(`malformed trigger — "${lastTrigger.trim()}" names no event or state`);
     }
   }
 

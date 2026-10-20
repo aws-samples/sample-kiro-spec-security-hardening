@@ -66,7 +66,13 @@ export const inputValidationMappings: CWEMapping[] = [
       {
         id: "EC-434-2",
         pattern: "event-driven",
-        template: "WHEN a user uploads a file, THE SYSTEM SHALL enforce a maximum file size of {configured_limit} AND SHALL store uploaded files outside the web-accessible document root with a randomized filename.",
+        template: "WHEN a user uploads a file, THE SYSTEM SHALL enforce a maximum file size of {configured_limit} AND SHALL store uploaded files outside every directory the system serves or executes files from, under a randomized filename and without execute permission.",
+        variants: [
+          {
+            when: "http",
+            template: "WHEN a user uploads a file, THE SYSTEM SHALL enforce a maximum file size of {configured_limit} AND SHALL store uploaded files outside the web-accessible document root with a randomized filename.",
+          },
+        ],
         securityPrimitive: "upload-storage-isolation",
         rationale: "Isolating uploads from the document root prevents direct execution of uploaded payloads.",
       },
@@ -130,7 +136,7 @@ export const inputValidationMappings: CWEMapping[] = [
       {
         id: "EC-502-1",
         pattern: "ubiquitous",
-        template: "THE SYSTEM SHALL validate the schema and type of all deserialized data before use. THE SYSTEM SHALL NOT deserialize data that does not pass schema validation. THE SYSTEM SHALL NOT use native object deserialization (e.g., Java ObjectInputStream, Python pickle) on untrusted input.",
+        template: "THE SYSTEM SHALL validate the schema and type of all deserialized data before use. THE SYSTEM SHALL NOT deserialize data that does not pass schema validation. THE SYSTEM SHALL NOT use language-native object deserialization that can instantiate arbitrary types ({deserialization_examples}) on untrusted input.",
         securityPrimitive: "safe-deserialization",
         rationale: "Unsafe deserialization of untrusted data enables remote code execution through crafted payloads.",
       },
@@ -143,6 +149,7 @@ export const inputValidationMappings: CWEMapping[] = [
     owaspCategory: "A01:2021-Broken Access Control",
     severity: "medium",
     tags: ["input-validation", "redirect", "url-validation"],
+    requiresContext: ["http"],
     triggerConditions: [
       {
         id: "TC-601-1",
@@ -193,7 +200,7 @@ export const inputValidationMappings: CWEMapping[] = [
       {
         id: "EC-400-1",
         pattern: "ubiquitous",
-        template: "THE SYSTEM SHALL enforce maximum request size, maximum items per batch, and per-user rate limits. THE SYSTEM SHALL reject requests exceeding these limits with HTTP 429 or 413 as appropriate.",
+        template: "THE SYSTEM SHALL enforce maximum request size, maximum items per batch, and per-user rate limits. THE SYSTEM SHALL reject requests exceeding these limits with an error that names the exceeded limit.",
         securityPrimitive: "resource-limits",
         rationale: "Unbounded resource consumption enables denial-of-service attacks against shared infrastructure.",
       },

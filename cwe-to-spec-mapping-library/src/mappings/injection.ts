@@ -8,6 +8,7 @@ export const injectionMappings: CWEMapping[] = [
     owaspCategory: "A03:2021-Injection",
     severity: "critical",
     tags: ["injection", "database", "input-validation", "parameterized-query"],
+    requiresContext: ["sql-database"],
     triggerConditions: [
       {
         id: "TC-89-1",
@@ -15,7 +16,7 @@ export const injectionMappings: CWEMapping[] = [
         keywords: ["query", "database", "search", "filter", "lookup", "find", "select", "retrieve", "fetch"],
         semanticPatterns: [
           "user submits.*search",
-          "search.*by.*name|id|email|field",
+          "search.*by.*(?:name|id|email|field)",
           "query.*records",
           "filter.*results",
           "look up.*from.*database",
@@ -47,7 +48,7 @@ export const injectionMappings: CWEMapping[] = [
       {
         id: "EC-89-2",
         pattern: "event-driven",
-        template: "WHEN {actor} submits {input_description}, THE SYSTEM SHALL sanitize all input parameters against an allowlisted character set. THE SYSTEM SHALL NOT use unsanitized input parameters in any database operation.",
+        template: "WHEN {actor} submits {input_description}, THE SYSTEM SHALL validate each input parameter against the format rules defined for its field. THE SYSTEM SHALL NOT use an input parameter that failed validation in any database operation.",
         securityPrimitive: "input-validation",
         rationale: "Defense-in-depth: allowlist validation reduces attack surface even when parameterized queries are in place.",
       },
@@ -92,6 +93,7 @@ export const injectionMappings: CWEMapping[] = [
     owaspCategory: "A03:2021-Injection",
     severity: "high",
     tags: ["injection", "xss", "output-encoding", "csp", "browser"],
+    requiresContext: ["html"],
     triggerConditions: [
       {
         id: "TC-79-1",
@@ -100,7 +102,7 @@ export const injectionMappings: CWEMapping[] = [
         semanticPatterns: [
           "display.*user.*content",
           "render.*submitted.*data",
-          "show.*comment|review|message|post",
+          "show.*(?:comment|review|message|post)",
           "present.*profile.*information",
           "output.*to.*page",
         ],
@@ -141,6 +143,7 @@ export const injectionMappings: CWEMapping[] = [
     owaspCategory: "A05:2021-Security Misconfiguration",
     severity: "high",
     tags: ["injection", "xml", "xxe", "parser-configuration"],
+    requiresContext: ["xml"],
     triggerConditions: [
       {
         id: "TC-611-1",
@@ -232,6 +235,7 @@ export const injectionMappings: CWEMapping[] = [
     owaspCategory: "A03:2021-Injection",
     severity: "high",
     tags: ["injection", "ldap", "directory", "input-validation"],
+    requiresContext: ["ldap"],
     triggerConditions: [
       {
         id: "TC-90-1",
@@ -270,6 +274,7 @@ export const injectionMappings: CWEMapping[] = [
     owaspCategory: "A03:2021-Injection",
     severity: "high",
     tags: ["injection", "xpath", "xml", "input-validation"],
+    requiresContext: ["xml"],
     triggerConditions: [
       {
         id: "TC-643-1",
@@ -301,6 +306,7 @@ export const injectionMappings: CWEMapping[] = [
     owaspCategory: "A03:2021-Injection",
     severity: "high",
     tags: ["injection", "http", "crlf", "header", "input-validation"],
+    requiresContext: ["http"],
     triggerConditions: [
       {
         id: "TC-113-1",

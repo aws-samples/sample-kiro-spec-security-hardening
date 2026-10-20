@@ -131,3 +131,36 @@ describe("TriggerDetector", () => {
     expect(triggers.every((t) => t.cweId === "CWE-89")).toBe(true);
   });
 });
+
+describe("TriggerDetector word boundaries", () => {
+  const detector = new TriggerDetector(allMappings);
+  const fired = (text: string) =>
+    detector
+      .detectTriggers({ id: "R", text })
+      .filter((t) => t.confidence >= 0.3)
+      .map((t) => t.cweId);
+
+  it("does not read 'id' inside 'invalid' as an identifier lookup", () => {
+    expect(
+      fired("IF a registration request contains a Username that violates the rules, THEN THE Chat_Server SHALL reject the request with an Error_Reply that names the invalid field.")
+    ).not.toContain("CWE-89");
+  });
+
+  it("does not read 'logout' as logging", () => {
+    expect(
+      fired("WHEN the user enters /quit, THE Chat_Client SHALL send a logout request and exit.")
+    ).not.toContain("CWE-532");
+  });
+
+  it("still matches inflected keywords", () => {
+    const [cwe] = detector.detectTriggers({ id: "R", text: "THE SYSTEM SHALL write requests to the logs." }).filter((t) => t.cweId === "CWE-532");
+    expect(cwe?.matchedKeywords).toEqual(expect.arrayContaining(["log"]));
+  });
+
+  it("records whether a CWE matched on a pattern or on keywords alone", () => {
+    const [cwe] = detector
+      .detectTriggers({ id: "R", text: "WHEN a user submits a search query, THE SYSTEM SHALL return matching results from the database." })
+      .filter((t) => t.cweId === "CWE-89");
+    expect(cwe.matchedPatterns!.length).toBeGreaterThan(0);
+  });
+});

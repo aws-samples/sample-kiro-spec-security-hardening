@@ -57,14 +57,17 @@ Confirm the right folder by checking that its `package.json` has
 SIS_ENGINE=/abs/path/to/cwe-to-spec-mapping-library
 ```
 
-### One-time setup
+### Setup
+
+The engine ships prebuilt in `dist/` and has no runtime dependencies, so it
+needs only Node.js 20 or later. There is nothing to install.
+
+Only if `"$SIS_ENGINE/dist/cli/harden-requirements.js"` is missing (for
+example, a checkout made before `dist/` was committed), build it once:
 
 ```bash
-cd "$SIS_ENGINE" && npm install     # installs deps and builds dist/ via the `prepare` hook
+cd "$SIS_ENGINE" && npm ci --ignore-scripts && npm run build
 ```
-
-Skip it if `"$SIS_ENGINE/dist/cli/harden-requirements.js"` already exists.
-`npm install` is idempotent, so running it again is safe.
 
 ## Workflow
 
@@ -74,42 +77,42 @@ Skip it if `"$SIS_ENGINE/dist/cli/harden-requirements.js"` already exists.
      `.kiro/specs/*/requirements.md` in the workspace by absolute path.
    - **Treat a general request as consent to run on all of them.** "Harden my
      specs", "security-review the specs", "harden everything", or a single spec
-     found: run without asking again. Mention which files will change and that
-     `git diff` shows exactly what was added.
+     found: run without asking again. Mention which files will change. The CLI
+     prints every line it adds, so the change is reviewable even when `.kiro/`
+     is not under version control.
    - **Ask only if the request is ambiguous** (e.g. "harden the spec" when there
      are several specs). Ask one question that lists the specs found and
      offers an "all of them" option, then run on what the user picks. Don't
      ask a second time, and don't swap in a scratch copy or the bundled
      example — the user's real spec files are the target.
-   - Requirements should be in EARS form; the engine tolerates and normalizes
-     near-EARS prose but flags what it cannot normalize.
+   - Requirements should be in EARS form. The engine never rewrites a
+     requirement; it only reports the ones that are not strict EARS.
+   - **Never copy the spec.** Do not create backups, `.orig`/`.bak`/`.sis-raw`
+     copies, scratch versions or sidecar files of `requirements.md`, before or
+     after the run. The engine edits the one file in place and only adds lines,
+     and its output lists every added line. To preview without writing, run it
+     with `--dry-run`.
 
 2. **Run the engine** on the confirmed file(s), or on the whole specs directory.
-   Always pass absolute paths. **Use the compiled CLI first:**
+   Always pass absolute paths:
 
    ```bash
-   # Primary — compiled CLI (needs only Node; built by `npm install`):
+   # Compiled CLI (ships prebuilt in dist/; needs only Node):
    node "$SIS_ENGINE/dist/cli/harden-requirements.js" /abs/path/to/.kiro/specs/ --semantic-candidates
    # …or a single file:
    node "$SIS_ENGINE/dist/cli/harden-requirements.js" /abs/path/to/.kiro/specs/my-feature/requirements.md --semantic-candidates
    ```
 
-   **Fallback — run from source with tsx.** Use this only if `dist/` is missing
-   and `npm install` can't rebuild it. `tsx` is a devDependency, so it is missing
-   if dev dependencies were left out; if you see `tsx: command not found`, run
-   `npm install --include=dev` in `$SIS_ENGINE` first:
-
-   ```bash
-   cd "$SIS_ENGINE" && npm run harden -- /abs/path/to/.kiro/specs/ --semantic-candidates
-   ```
-
-   A `[SKIP] … already hardened` line means that file already has
-   `[SECURITY: …]` tags and was left untouched (see the re-run note in step 6).
+   `[SKIP] … up to date` means every requirement in that file was already
+   hardened. `[SKIP] … no review record` means the file was hardened by an
+   older version of this power; see step 6.
 
    Useful options: `--threshold <0-1>` (confidence, default 0.3),
    `--max-proposals <n>` (default 10), `--no-low-severity`,
    `--semantic-candidates` (print sub-threshold CWEs for you to adjudicate — see
-   step 3), `--semantic-floor <0-1>` (default 0.05).
+   step 3), `--semantic-floor <0-1>` (default 0.05), `--dry-run` (print what
+   would be added, write nothing), `--check` (validate only; see step 3),
+   `--mark-reviewed` (see step 6).
 
 3. **Run the semantic review pass (agentic — this is your job, not the engine's).**
    The deterministic engine matches lexically: it fires a CWE only when keywords
@@ -145,44 +148,120 @@ Skip it if `"$SIS_ENGINE/dist/cli/harden-requirements.js"` already exists.
    generic template: turn "matches the resource owner" into the concrete predicate,
    e.g. *"THE SYSTEM SHALL return clinical notes only for patients with whom the
    requesting clinician has an active care relationship."* Keep the additive,
-   traceable, and explicit principles below. Because the engine no-ops on an
-   already-hardened file (step 6), make these additions in this same pass —
-   re-running will not add them for you.
+   traceable, and explicit principles below. Re-running hardens only
+   requirements added or changed since (step 6), so make these additions in
+   this same pass — re-running will not add them for you.
 
-4. **Read the result.** The engine edits the input `filename.md` **in place** —
-   there are no sidecar files. Each requirement line is normalized to strict EARS;
-   requirement-specific `[SECURITY: …]` constraints are nested under the
-   requirement they harden — in the parent's own subject (e.g. `THE Cron_SDK
-   SHALL`) to match the spec's voice and keep component traceability; and
-   cross-cutting constraints (those that would
-   otherwise repeat under most requirements) are consolidated into one
-   `## Security Baseline (Cross-Cutting)` section at the end. `git diff` the file
-   to see exactly what hardening added. The `report` returned to you still carries
-   the full triggered-CWE / rationale detail to explain *why*.
+   **Format of a hand-added line** (the engine checks every one, step 4):
+   - **ID:** `SEC-<requirement>-SEM-<CWE number>-<n>`, where `<requirement>`
+     is the ID the engine uses for that requirement (`REQ-11.2` for criterion 2
+     of "Requirement 11"), e.g. `SEC-REQ-11.2-SEM-862-1`. Baseline lines use
+     the next free `SEC-BASELINE-<n>`. Every ID must be unique in the file.
+   - **One obligation per line.** "SHALL scope X and SHALL NOT grant Y" is
+     two constraints: write two lines, both in EARS form.
+   - **Number** it after the requirement's last existing child (`2.4.`, `2.5.`).
+
+   **Work through every `=== SEMANTIC REVIEW ===` entry** and record a verdict
+   for each: confirmed (and the constraint you added) or rejected (and why).
+   You report these in step 5.
+
+   **Curate the engine's output in the same pass.** The engine reads one
+   requirement at a time and cannot know every design decision. Remove or
+   rewrite a generated `[SECURITY: …]` line that does not fit the system (for
+   example, a constraint for a component the system does not have), and say
+   why in your summary. Edit only `[SECURITY: …]` lines and the baseline
+   section. Never edit, split, re-tag, reorder or "restore" a requirement line:
+   its wording is the user's, and changing it changes what it obliges.
+
+   Every line flagged `built with generic text "the target" …` (or "the
+   operation", "the resource", "the configured limit") is a draft. Rewrite it
+   in the requirement's own terms (which role, which object, which limit), or
+   remove it.
+
+   **Then validate your edits:**
+
+   ```bash
+   node "$SIS_ENGINE/dist/cli/harden-requirements.js" /abs/path/to/requirements.md --check
+   ```
+
+   `--check` writes nothing. It reports requirements that are not strict EARS
+   and every malformed `[SECURITY: …]` line: two obligations on one line, no
+   named actor, a malformed trigger, or a missing or duplicate ID. It exits
+   with status 1 if it reports anything. Fix the constraint lines until it
+   reports none of them.
+
+4. **Read the result.** The engine edits the input `filename.md` **in place**,
+   and only by adding lines. Every original line, requirement lines included,
+   stays exactly as written: nothing is split, re-tagged, reworded or moved.
+   Requirement-specific `[SECURITY: …]` constraints are inserted under the
+   requirement they harden, in the parent's own subject (e.g. `THE Cron_SDK
+   SHALL`). Cross-cutting constraints (those that would otherwise repeat under
+   most requirements) are consolidated into one
+   `## Security Baseline (Cross-Cutting)` section at the end. A hidden
+   `<!-- spec-it-safe:reviewed … -->` comment at the very end records which
+   requirements were hardened; leave it in place. The CLI output lists every
+   added line by the original line it follows. The engine refuses to write a
+   file if any original line would not survive unchanged.
 
 5. **Surface the results to the user.** Summarize concisely:
    - How many requirements were hardened vs left as-is.
    - The highest-priority (`mandatory`) constraints added, grouped by the CWE they close.
    - The gaps you added in the semantic review pass (step 3) that the deterministic
      engine could not infer, and why each holds.
-   - Any **warnings** the CLI printed:
-     - `[WARN] … not strict EARS` — the requirement needs a human to rewrite; name it.
-     - `[WARN] … may be anchored to the wrong requirement` — a constraint may be attached to the wrong requirement; ask the user to confirm placement.
-     - "compound requirement split" — a requirement was decomposed into atomic ones.
+   - The verdict on **every** semantic-review candidate: how many there were,
+     which you confirmed, and why you rejected the rest.
+   - Every generated line you rewrote or removed, and why.
+   - The result of the final `--check` run. Say what it covers: it validates
+     EARS structure, IDs and one-obligation-per-line, not whether a constraint
+     is complete or correct. Do not describe a clean check as more than that.
+   - Any **warnings** the CLI printed. Warnings name the requirement by its
+     criterion number and line, e.g. `7.8 (line 213)`:
+     - `[WARN] … not strict EARS` — the requirement does not follow EARS; name
+       it and let the user decide. The engine did not change it, and neither
+       should you. The check is structural only: a truncated requirement such
+       as `THE Chat_Server SHALL create.` passes without a warning. If you
+       notice a requirement whose response is incomplete, point it out to the
+       user rather than fixing it.
+     - `[WARN] … matched … only on the keywords …` — the CWE fired on loose
+       keywords with no pattern of the weakness, so the named constraints may be
+       misplaced. Decide from the requirement's meaning: keep, move, or drop
+       them, and say which.
+     - `[WARN] … built with generic text …` — the constraint was built from a
+       template slot the requirement did not fill; specialize or remove it.
+     - `[WARN] … constraint line …` — a `[SECURITY: …]` line already in the
+       file is malformed (compound, actorless, missing or duplicate ID). These
+       are reported on every run, including `up to date` ones; fix the line.
+     - `[WARN] … request-scoped but … post-commit event` — the constraint
+       cannot be enforced at that point in the flow; move it to the
+       request-entry requirement.
+   - `[INFO] … not repeated` — a clause proposed under several criteria of the
+     same requirement section was written once, under the first. Nothing to do.
+   - `[INFO] Withheld as not applicable` — constraints the engine withheld
+     because the spec shows no matching component (no SQL database, no
+     browser) or declares the topic out of scope (e.g. TLS). Mention them, and
+     propose a compensating control by hand where one fits.
 
 6. **Re-runs and safety.** Consent comes from step 1 — don't ask again here.
-   Hardening is strictly additive — it never removes or weakens a functional
-   requirement, and `git diff` shows exactly what it added. Re-running on an
-   already-hardened file is a **no-op**: the tool detects the `[SECURITY: …]`
-   tags and leaves the file untouched (its EARS-split output does not round-trip,
-   so re-processing would corrupt it). To harden requirements added *after* a
-   hardening pass, re-run against the pre-hardening spec from version control.
+   Hardening is strictly additive — it never changes, removes or weakens a
+   requirement. Re-running is **incremental**: the review marker records each
+   requirement already hardened, so a re-run hardens only requirements added or
+   changed since. It does not re-propose constraints a reviewer removed from a
+   requirement that was already reviewed, and constraints already stated
+   anywhere in the file are not added twice. With nothing new, the run is a
+   no-op (`[SKIP] … up to date`).
+
+   A file hardened by an older version of this power has `[SECURITY: …]` lines
+   but no review marker, and is skipped (`[SKIP] … no review record`). Once its
+   current content is reviewed, run the CLI on it with `--mark-reviewed`. That
+   adds only the marker, so later runs harden just the requirements added
+   afterwards. Never reconstruct a "pre-hardening" copy to re-run against.
 
 ## Principles (do not violate)
 
 1. **Contextual** — only add constraints relevant to each requirement's semantics
    (file-upload requirements get upload validation, not CSRF).
-2. **Additive** — never drop or weaken a functional requirement.
+2. **Additive** — never drop, weaken, split or reword a requirement. Security
+   constraints are added beside it; the requirement's own text stays verbatim.
 3. **Explicit** — state security invariants in the spec; do not assume them from
    middleware or existing code. The coding agent implements the spec literally.
 4. **Traceable** — every constraint maps to a specific CWE with a rationale.

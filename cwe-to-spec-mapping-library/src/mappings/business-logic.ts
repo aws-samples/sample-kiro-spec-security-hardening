@@ -27,7 +27,7 @@ export const businessLogicMappings: CWEMapping[] = [
       {
         id: "EC-362-1",
         pattern: "event-driven",
-        template: "WHEN {actor} requests {operation} on a shared resource, THE SYSTEM SHALL acquire an exclusive lock or use an atomic compare-and-swap operation to prevent concurrent modification between the validation check and the state mutation.",
+        template: "WHEN {actor} requests to {operation} on a shared resource, THE SYSTEM SHALL acquire an exclusive lock or use an atomic compare-and-swap operation to prevent concurrent modification between the validation check and the state mutation.",
         securityPrimitive: "atomic-operation",
         rationale: "TOCTOU race conditions enable double-spending, over-allocation, and inconsistent state.",
       },

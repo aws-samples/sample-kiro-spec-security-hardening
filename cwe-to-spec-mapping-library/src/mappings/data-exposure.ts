@@ -159,7 +159,13 @@ export const dataExposureMappings: CWEMapping[] = [
       {
         id: "EC-209-1",
         pattern: "ubiquitous",
-        template: "THE SYSTEM SHALL return generic error messages to external callers. THE SYSTEM SHALL NOT expose stack traces, internal paths, database schema details, or configuration values in error responses.",
+        template: "THE SYSTEM SHALL return generic error messages to external callers. THE SYSTEM SHALL NOT expose stack traces, internal paths, or configuration values in error responses.",
+        variants: [
+          {
+            when: "sql-database",
+            template: "THE SYSTEM SHALL return generic error messages to external callers. THE SYSTEM SHALL NOT expose stack traces, internal paths, database schema details, or configuration values in error responses.",
+          },
+        ],
         securityPrimitive: "safe-error-messages",
         rationale: "Detailed error messages reveal internal architecture to attackers, aiding exploitation.",
       },
@@ -190,7 +196,8 @@ export const dataExposureMappings: CWEMapping[] = [
       {
         id: "EC-319-1",
         pattern: "ubiquitous",
-        template: "THE SYSTEM SHALL transmit all sensitive data exclusively over TLS 1.2 or higher. THE SYSTEM SHALL NOT permit plaintext HTTP for any endpoint handling sensitive information.",
+        template: "THE SYSTEM SHALL transmit all sensitive data exclusively over TLS 1.2 or higher. THE SYSTEM SHALL NOT transmit sensitive information over an unencrypted channel.",
+        outOfScopeTerms: ["tls", "encryption", "transport encryption"],
         securityPrimitive: "transport-encryption",
         rationale: "Cleartext transmission exposes sensitive data to network-level interception.",
       },

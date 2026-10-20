@@ -7,6 +7,46 @@ export interface CWEMapping {
   earsConstraints: EARSConstraint[];
   severity: "critical" | "high" | "medium" | "low";
   tags: string[];
+  /**
+   * Technology the weakness needs before it can exist. When a spec gives no sign
+   * of any listed feature — no SQL database for CWE-89, no browser for CWE-79 —
+   * the mapping is suppressed for that spec instead of proposing constraints for
+   * a component it does not have. Any one listed feature is enough.
+   */
+  requiresContext?: SpecFeature[];
+}
+
+/**
+ * Technology a spec can be detected to use. Detected from the whole document
+ * (see `detectSpecContext`), not from one requirement: a database named in the
+ * introduction makes every search requirement a database query.
+ */
+export type SpecFeature = "sql-database" | "http" | "html" | "xml" | "ldap";
+
+/** Implementation languages a spec can name, for language-specific examples. */
+export type SpecLanguage =
+  | "go"
+  | "java"
+  | "python"
+  | "javascript"
+  | "dotnet"
+  | "ruby"
+  | "php";
+
+/**
+ * Document-level facts that decide which constraints apply to a spec at all.
+ */
+export interface SpecContext {
+  /** Features the document shows evidence of using. */
+  features: SpecFeature[];
+  /** Lowercased text of every statement that declares something out of scope. */
+  outOfScope: string[];
+  /**
+   * Implementation languages the spec names. Templates with a language-specific
+   * example slot (e.g. `{deserialization_examples}`) cite these languages'
+   * APIs; when none is named, a cross-language default is used.
+   */
+  languages?: SpecLanguage[];
 }
 
 export interface TriggerCondition {
@@ -23,6 +63,28 @@ export interface EARSConstraint {
   template: string;
   securityPrimitive: string;
   rationale: string;
+  /**
+   * Alternative wordings for specs that have a given feature. The first variant
+   * whose feature the spec has replaces `template`; otherwise `template` is
+   * used. Keeps the default wording neutral ("outside any directory the system
+   * serves files from") while a web spec still gets the precise one ("outside
+   * the web-accessible document root").
+   */
+  variants?: { when: SpecFeature; template: string }[];
+  /** Like `CWEMapping.requiresContext`, for one constraint of a mapping. */
+  requiresContext?: SpecFeature[];
+  /**
+   * Terms that, when a spec declares any of them out of scope ("TLS or other
+   * encryption"), suppress this constraint. Proposing TLS for a spec whose
+   * authors decided against TLS contradicts the spec rather than hardening it.
+   */
+  outOfScopeTerms?: string[];
+  /**
+   * Regex (case-insensitive) the parent requirement must match for this
+   * constraint to attach to it. Keeps a storage constraint such as password
+   * hashing off a requirement that only prompts for or sends the password.
+   */
+  appliesTo?: string;
 }
 
 export type EARSPattern =
@@ -52,7 +114,22 @@ export interface TriggeredCWE {
   cweName: string;
   confidence: number;
   matchedTriggers: string[];
+  /** Keywords that matched, for judging how strong the evidence is. */
+  matchedKeywords?: string[];
+  /** Semantic patterns that matched. Empty means keywords alone fired the CWE. */
+  matchedPatterns?: string[];
   severity: "critical" | "high" | "medium" | "low";
+}
+
+/**
+ * A constraint the engine would have proposed but withheld because the spec's
+ * context rules it out. Reported so the omission is visible, not silent.
+ */
+export interface SuppressedConstraint {
+  requirementId: string;
+  cweId: string;
+  constraintId: string;
+  reason: string;
 }
 
 export interface ProposedRequirement {
@@ -63,6 +140,12 @@ export interface ProposedRequirement {
   securityPrimitives: string[];
   rationale: string;
   priority: "mandatory" | "recommended" | "optional";
+  /**
+   * Placeholders that could not be filled from the requirement and fell back
+   * to generic text ("the target", "the operation"). A clause with any is a
+   * draft that must be specialized to the requirement before it is useful.
+   */
+  genericSlots?: { slot: string; filledWith: string }[];
 }
 
 export interface HardeningReport {

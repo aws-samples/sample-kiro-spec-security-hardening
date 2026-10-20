@@ -55,7 +55,7 @@ export const securityMisconfigurationMappings: CWEMapping[] = [
       {
         id: "EC-16-1",
         pattern: "ubiquitous",
-        template: "THE SYSTEM SHALL disable all default accounts, sample data, and unnecessary features before deployment. THE SYSTEM SHALL enforce secure defaults for all configuration parameters.",
+        template: "THE SYSTEM SHALL ship with no default accounts, sample data, or unnecessary features enabled. THE SYSTEM SHALL enforce secure defaults for all configuration parameters.",
         securityPrimitive: "secure-defaults",
         rationale: "Default configurations are publicly documented and are the first target of automated attacks.",
       },
@@ -68,6 +68,7 @@ export const securityMisconfigurationMappings: CWEMapping[] = [
     owaspCategory: "A05:2021-Security Misconfiguration",
     severity: "medium",
     tags: ["misconfiguration", "cors", "cross-origin"],
+    requiresContext: ["http"],
     triggerConditions: [
       {
         id: "TC-942-1",
@@ -98,6 +99,7 @@ export const securityMisconfigurationMappings: CWEMapping[] = [
     owaspCategory: "A05:2021-Security Misconfiguration",
     severity: "medium",
     tags: ["misconfiguration", "clickjacking", "framing"],
+    requiresContext: ["html"],
     triggerConditions: [
       {
         id: "TC-1021-1",

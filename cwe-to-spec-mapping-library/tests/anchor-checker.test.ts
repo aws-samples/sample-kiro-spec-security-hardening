@@ -131,3 +131,35 @@ describe("checkConstraintAnchoring", () => {
     expect(proposals).toHaveLength(1);
   });
 });
+
+describe("keyword-only anchoring", () => {
+  const requirement: Requirement = {
+    id: "REQ-7.8",
+    text: "WHEN the user enters /quit or standard input reaches end of file, THE Chat_Client SHALL send a logout request.",
+  };
+  const proposal: ProposedRequirement = {
+    id: "SEC-REQ-7.8-EC-20-1-1",
+    text: "WHEN external input is received, THE SYSTEM SHALL validate the input against an expected schema.",
+    earsPattern: "event-driven",
+    addressesCWEs: ["CWE-20"],
+    securityPrimitives: ["input-schema-validation"],
+    rationale: "",
+    priority: "mandatory",
+  };
+
+  it("warns when the CWE matched on keywords alone", () => {
+    const warnings = checkConstraintAnchoring(requirement, [proposal], [
+      { cweId: "CWE-20", cweName: "", confidence: 0.4, matchedTriggers: [], matchedKeywords: ["input", "enter", "request"], matchedPatterns: [], severity: "high" },
+    ]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0].constraintId).toBe(proposal.id);
+    expect(warnings[0].message).toContain('"input"');
+  });
+
+  it("stays silent when a semantic pattern matched", () => {
+    const warnings = checkConstraintAnchoring(requirement, [proposal], [
+      { cweId: "CWE-20", cweName: "", confidence: 0.6, matchedTriggers: [], matchedKeywords: ["input"], matchedPatterns: ["user.*submit"], severity: "high" },
+    ]);
+    expect(warnings).toEqual([]);
+  });
+});

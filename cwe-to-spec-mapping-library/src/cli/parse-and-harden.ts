@@ -1,18 +1,22 @@
+import { createHash } from "node:crypto";
 import { readFile, writeFile, readdir, stat, unlink } from "node:fs/promises";
 import { resolve, basename, dirname, join, extname } from "node:path";
 import { HardeningEngine } from "../engine/hardening-engine.js";
 import type { HardeningOptions } from "../engine/hardening-engine.js";
-import type { ProposedRequirement } from "../types/index.js";
 import type { AnchorWarning } from "../engine/anchor-checker.js";
+import { detectSpecContext } from "../engine/spec-context.js";
 import {
-  normalizeSourceRequirement,
+  validateConstraintStatement,
+  validateSourceRequirement,
   type SourceWarning,
 } from "../engine/source-normalizer.js";
 import type {
   Requirement,
   EARSPattern,
   HardeningReport,
+  ProposedRequirement,
   SemanticCandidate,
+  SuppressedConstraint,
 } from "../types/index.js";
 
 export interface ParsedRequirement {
@@ -20,14 +24,27 @@ export interface ParsedRequirement {
   text: string;
   /**
    * The requirement as written, with the list marker and `[SECURITY: ...]` tag
-   * removed but its `REQ-x:` prefix and `[Pattern]` tag intact. Held separately
-   * from `text` so that source normalization keeps working if `text` is ever
-   * narrowed to the bare response for trigger detection.
+   * removed but its `REQ-x:` prefix and `[Pattern]` tag intact.
    */
   rawText: string;
   earsPattern: EARSPattern;
   /** Primitives named by a leading `[SECURITY: ...]` tag, if present. */
   securityAnnotations?: string[];
+  /**
+   * True for a `[SECURITY: ...]` constraint line — one this tool or a reviewer
+   * added earlier. Constraints count toward coverage but are never hardened
+   * themselves.
+   */
+  constraint?: boolean;
+  /**
+   * How a person finds the requirement: `12.3` for criterion 3 under
+   * "Requirement 12", the author's own ID such as `REQ-F-015`, or `line 40`.
+   */
+  label: string;
+  /** The "Requirement N" section the line sits in, when there is one. */
+  section?: string;
+  /** True for a line inside the Security Baseline section. */
+  inBaseline?: boolean;
   /** Index of the first line of this requirement in the source file. */
   lineStart: number;
   /** Index of the last line of this requirement in the source file. */
@@ -38,33 +55,99 @@ export interface ParsedRequirement {
   numbered: boolean;
 }
 
+/** One line hardening adds, located by the original line it follows. */
+export interface AddedLine {
+  /** 1-based line of the original file the addition follows (0 = file start). */
+  after: number;
+  text: string;
+}
+
+export type HardenMode =
+  /** First run: every requirement was hardened. */
+  | "full"
+  /** Hardened before: only requirements added or changed since were hardened. */
+  | "incremental"
+  /** Hardened before and nothing has changed since. File left untouched. */
+  | "up-to-date"
+  /** Hardened by an older version with no review record. File left untouched. */
+  | "unrecorded"
+  /** `markReviewed`: the current requirements were recorded as reviewed. */
+  | "marked"
+  /** `check`: the file was validated only. Nothing was proposed or written. */
+  | "checked";
+
+export interface HardenFileOptions extends HardeningOptions {
+  /** Compute and report the additions without writing the file. */
+  dryRun?: boolean;
+  /**
+   * Record every current requirement as reviewed without proposing anything.
+   * Use on a file hardened by an older version (mode `unrecorded`) so later
+   * runs harden only what is added afterwards.
+   */
+  markReviewed?: boolean;
+  /**
+   * Validate only: report requirements that are not strict EARS and
+   * `[SECURITY: ...]` lines that are malformed, and write nothing. Use after
+   * hand-editing constraints.
+   */
+  check?: boolean;
+}
+
+/** A problem with a `[SECURITY: ...]` line already in the file, or one just added. */
+export interface ConstraintWarning {
+  /** `12.3 (line 40)` for an inline constraint, `line 300` for a baseline one. */
+  location: string;
+  /** The line's constraint ID, or `(no ID)`. */
+  constraintId: string;
+  message: string;
+}
+
 export interface HardenFileResult {
   inputPath: string;
-  /**
-   * Where the curated spec was written. Equal to `inputPath`: hardening edits the
-   * requirements file in place rather than emitting sidecar files.
-   */
+  /** Always equal to `inputPath`: hardening edits the file in place. */
   outputPath: string;
+  /** Source requirements found, not counting `[SECURITY: ...]` lines. */
   requirementsFound: number;
-  /** Cross-cutting constraints lifted into the single Security Baseline section. */
+  /** Requirements this run hardened (all on a first run, new ones afterwards). */
+  requirementsHardened: number;
+  /** Cross-cutting constraints this run added to the Security Baseline. */
   baselineConstraints: number;
   /** Stale sidecar artifacts from an older two-file run that were removed. */
   removedArtifacts: string[];
-  /**
-   * True when the file was left untouched because it is already hardened.
-   * Hardening output does not round-trip cleanly back through the parser, so
-   * re-processing it in place would corrupt it; the file is skipped instead.
-   */
+  mode: HardenMode;
+  /** True when the file was left untouched (`up-to-date` or `unrecorded`). */
   skipped: boolean;
+  /** True when `dryRun` was set: `addedLines` were computed but not written. */
+  dryRun: boolean;
+  /** Every line this run adds. Original lines are never changed or removed. */
+  addedLines: AddedLine[];
   report: HardeningReport;
-  /** Source requirements that were split or could not be made strict EARS. */
+  /** Source requirements that are not strict EARS. Reported, never rewritten. */
   sourceWarnings: SourceWarning[];
-  /** Constraints anchored to a requirement whose trigger cannot enforce them. */
+  /** Constraints that may be anchored to the wrong requirement. */
   anchorWarnings: AnchorWarning[];
+  /** Constraints withheld because the spec's context rules them out. */
+  suppressedConstraints: SuppressedConstraint[];
+  /**
+   * Added constraints built with generic placeholder text ("the target", "the
+   * operation") because the requirement did not supply a value. Each is a
+   * draft that must be specialized.
+   */
+  specializationWarnings: ConstraintWarning[];
+  /**
+   * Problems in the `[SECURITY: ...]` lines already in the file — including
+   * ones a reviewer wrote by hand: two obligations on one line, no named
+   * actor, a malformed trigger, a missing or duplicated constraint ID.
+   */
+  constraintWarnings: ConstraintWarning[];
+  /**
+   * Proposed constraints not written because the same clause was already
+   * being added under an earlier criterion of the same requirement section.
+   */
+  foldedDuplicates: number;
   /**
    * Sub-threshold CWEs surfaced for agentic adjudication rather than applied to
-   * the file. Never written into the spec by the deterministic pass; the agent
-   * confirms and domain-specializes them (see the harden-spec skill).
+   * the file (see the harden-spec skill).
    */
   semanticCandidates: SemanticCandidate[];
 }
@@ -80,7 +163,6 @@ function detectEARSPattern(text: string): EARSPattern {
   if (hasWhen && hasShall) return "event-driven";
   if (hasWhile && hasShall) return "state-driven";
   if (hasIf && hasShall) return "unwanted-behavior";
-  if (hasShall) return "ubiquitous";
   return "ubiquitous";
 }
 
@@ -95,21 +177,14 @@ function stripListMarker(text: string): string {
 }
 
 /**
- * Splits a leading `[SECURITY: primitive, ...]` tag off a requirement, so that
- * re-parsing a previously hardened file recognises its own annotations instead
- * of re-proposing constraints that are already present.
- *
- * An emitted constraint line carries its proposal ID ahead of the tag
- * (`SEC-REQ-1-EC-862-1 [SECURITY: ...] THE SYSTEM SHALL ...`), so that optional
- * ID is consumed too. Without it the tag no longer sits at offset zero and the
- * annotation goes unrecognised, which would make every re-run re-propose
- * constraints the document already states.
+ * Splits a leading `[SECURITY: primitive, ...]` tag, and the proposal ID ahead
+ * of it (`SEC-12.3-EC-862-1 [SECURITY: ...]`), off a line.
  */
 function extractSecurityAnnotations(text: string): {
   text: string;
   securityAnnotations?: string[];
 } {
-  const match = text.match(/^(?:SEC-[\w-]+\s+)?\[SECURITY:\s*([^\]]+)\]\s*/i);
+  const match = text.match(/^(?:SEC-[\w.-]+\s+)?\[SECURITY:\s*([^\]]+)\]\s*/i);
   if (!match) return { text };
 
   return {
@@ -123,15 +198,13 @@ function extractSecurityAnnotations(text: string): {
 
 /**
  * A line the author labelled with a requirement ID (`REQ-SEC-011:`) and wrote a
- * `SHALL` into is a requirement, whatever shape its grammar takes.
- *
- * This is deliberately looser than the pattern checks below. A line such as
- * "REQ-SEC-N-001: All payment operations shall be logged ..." names no actor and
- * carries no trigger keyword, so the structural checks miss it — and a miss here
- * is silent: the line is copied to the output neither normalized, hardened, nor
- * warned about. Recognizing it means it is at least reported as non-strict.
+ * `SHALL` into is a requirement, whatever shape its grammar takes — recognizing
+ * it means it is at least reported when it is not strict EARS.
  */
 const LABELLED_REQUIREMENT = /^[A-Z][\w-]*-[\w-]*\d+[a-z]?\s*:/;
+
+/** The author's own requirement ID, when the line starts with one. */
+const AUTHOR_ID = /^([A-Z][\w-]*-[\w-]*\d+[a-z]?)\s*:/;
 
 function looksLikeEARSRequirement(text: string): boolean {
   const upper = text.toUpperCase();
@@ -146,17 +219,65 @@ function looksLikeEARSRequirement(text: string): boolean {
   );
 }
 
-export function parseRequirementsFromMarkdown(content: string, filePath: string): ParsedRequirement[] {
+const BASELINE_HEADING = "## Security Baseline (Cross-Cutting)";
+
+/** A Kiro requirement heading: "### Requirement 12: Chat messages". */
+const REQUIREMENT_HEADING = /^(#{1,6})\s+Requirement\s+(\d+[\w.]*)\b/i;
+
+/**
+ * Record of the requirements already reviewed, as hashes of their text. Kept
+ * in an HTML comment at the end of the file, which Markdown renderers hide.
+ * It is what lets a re-run harden only requirements added or changed since,
+ * without a pre-hardening copy of the spec.
+ */
+const REVIEW_MARKER = /<!--\s*spec-it-safe:reviewed\s+v1\b([\s\S]*?)-->/;
+
+function requirementHash(text: string): string {
+  return createHash("sha256")
+    .update(text.replace(/\s+/g, " ").trim())
+    .digest("hex")
+    .slice(0, 12);
+}
+
+function headingLevel(line: string): number {
+  return line.match(/^(#{1,6})\s/)?.[1].length ?? 0;
+}
+
+export function parseRequirementsFromMarkdown(
+  content: string,
+  filePath: string
+): ParsedRequirement[] {
   const requirements: ParsedRequirement[] = [];
   const lines = content.split("\n");
   const fileBase = basename(filePath, extname(filePath)).replace(/\s+/g, "-").toUpperCase();
+  const usedIds = new Set<string>();
 
   let reqCounter = 0;
+  let section: { number: string; level: number } | undefined;
+  let inBaseline = false;
+
+  const makeId = (label: string | undefined, rawText: string): string => {
+    reqCounter++;
+    const authorId = rawText.match(AUTHOR_ID)?.[1];
+    let id = authorId ?? (label ? `REQ-${label}` : `${fileBase}-REQ-${reqCounter}`);
+    if (usedIds.has(id)) id = `${id}-${reqCounter}`;
+    usedIds.add(id);
+    return id;
+  };
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
 
-    if (line.match(/^#{1,4}\s+(.+)/)) {
+    const level = headingLevel(line);
+    if (level > 0) {
+      const heading = line.match(REQUIREMENT_HEADING);
+      if (heading) {
+        section = { number: heading[2], level };
+      } else if (section && level <= section.level) {
+        section = undefined;
+      }
+      if (line.trim() === BASELINE_HEADING) inBaseline = true;
+      else if (inBaseline && level <= 2) inBaseline = false;
       continue;
     }
 
@@ -166,7 +287,7 @@ export function parseRequirementsFromMarkdown(content: string, filePath: string)
       let j = i + 1;
       while (j < lines.length) {
         const nextLine = lines[j];
-        if (nextLine.match(LIST_ITEM_START) || nextLine.match(/^#{1,4}\s+/) || nextLine.trim() === "") break;
+        if (nextLine.match(LIST_ITEM_START) || nextLine.match(/^#{1,6}\s+/) || nextLine.trim() === "") break;
         if (nextLine.match(/^\s+\S/)) {
           text += " " + nextLine.trim();
           j++;
@@ -176,48 +297,64 @@ export function parseRequirementsFromMarkdown(content: string, filePath: string)
       }
 
       const numbered = extractSecurityAnnotations(text);
+      const isConstraint = Boolean(numbered.securityAnnotations) || inBaseline;
 
       if (looksLikeEARSRequirement(numbered.text)) {
-        reqCounter++;
+        const itemNumber = numberedMatch[1];
+        const label = isConstraint
+          ? `line ${i + 1}`
+          : section && !itemNumber.includes(".")
+            ? `${section.number}.${itemNumber}`
+            : undefined;
         requirements.push({
-          id: `${fileBase}-REQ-${reqCounter}`,
+          id: isConstraint ? `CONSTRAINT-L${i + 1}` : makeId(label, numbered.text),
           text: numbered.text,
           rawText: numbered.text,
           earsPattern: detectEARSPattern(numbered.text),
           securityAnnotations: numbered.securityAnnotations,
+          constraint: isConstraint || undefined,
+          label: label ?? `line ${i + 1}`,
+          section: section?.number,
+          inBaseline: inBaseline || undefined,
           lineStart: i,
           lineEnd: j - 1,
           indent: line.match(/^\s*/)?.[0] ?? "",
           numbered: true,
         });
       }
+      i = j - 1;
       continue;
     }
 
     const trimmed = line.trim();
     const bare = extractSecurityAnnotations(stripListMarker(trimmed));
-    if (trimmed && looksLikeEARSRequirement(bare.text) && !line.startsWith("#")) {
+    if (trimmed && looksLikeEARSRequirement(bare.text)) {
       let text = bare.text;
       let j = i + 1;
       while (j < lines.length) {
         const nextLine = lines[j];
-        if (nextLine.trim() === "" || nextLine.match(/^#{1,4}\s+/) || nextLine.match(LIST_ITEM_START)) break;
+        if (nextLine.trim() === "" || nextLine.match(/^#{1,6}\s+/) || nextLine.match(LIST_ITEM_START)) break;
         text += " " + nextLine.trim();
         j++;
       }
 
-      reqCounter++;
+      const isConstraint = Boolean(bare.securityAnnotations) || inBaseline;
       requirements.push({
-        id: `${fileBase}-REQ-${reqCounter}`,
+        id: isConstraint ? `CONSTRAINT-L${i + 1}` : makeId(undefined, text),
         text,
         rawText: text,
         earsPattern: detectEARSPattern(text),
         securityAnnotations: bare.securityAnnotations,
+        constraint: isConstraint || undefined,
+        label: `line ${i + 1}`,
+        section: section?.number,
+        inBaseline: inBaseline || undefined,
         lineStart: i,
         lineEnd: j - 1,
         indent: line.match(/^\s*/)?.[0] ?? "",
         numbered: false,
       });
+      i = j - 1;
     }
   }
 
@@ -237,28 +374,23 @@ interface BaselineConstraint {
 
 /**
  * Number of distinct requirements a clause must be proposed under before it is
- * treated as cross-cutting. Clauses like "execute all database queries using
- * parameterized statements" or "require a valid authenticated session" attach to
- * nearly every requirement; repeating them under each is the noise this curation
- * removes. Three is the smallest count that still means "most requirements" for a
- * typical small spec while never lifting a genuinely one-off constraint.
+ * treated as cross-cutting.
  */
 const BASELINE_MIN_REQUIREMENTS = 3;
 
+/** Comparison key for "the document already states this clause". */
+function clauseKey(text: string): string {
+  return text.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
 /**
- * Partitions proposals into cross-cutting and requirement-specific.
- *
- * Grouping is by exact clause text, not by primitive: contextual clauses that
- * share a primitive but name different triggers ("WHEN a user submits a search
- * query ...") stay inline where they belong, while the identical ubiquitous
- * clauses that repeat verbatim get lifted once. Returns the normalized clause
- * keys to suppress inline and the ordered baseline constraints to emit, keyed in
- * first-appearance order so the baseline reads top-down like the spec.
+ * Partitions proposals into cross-cutting and requirement-specific, by exact
+ * clause text. `nextNumber` continues an existing baseline's numbering.
  */
-function computeBaseline(report: HardeningReport): {
-  suppressed: Set<string>;
-  constraints: BaselineConstraint[];
-} {
+function computeBaseline(
+  report: HardeningReport,
+  nextNumber: number
+): { suppressed: Set<string>; constraints: BaselineConstraint[] } {
   const byClause = new Map<
     string,
     { requirementIds: Set<string>; proposal: ProposedRequirement }
@@ -266,7 +398,7 @@ function computeBaseline(report: HardeningReport): {
 
   for (const result of report.results) {
     for (const proposal of result.proposedRequirements) {
-      const key = proposal.text.trim().toLowerCase();
+      const key = clauseKey(proposal.text);
       let entry = byClause.get(key);
       if (!entry) {
         entry = { requirementIds: new Set(), proposal };
@@ -283,7 +415,7 @@ function computeBaseline(report: HardeningReport): {
     if (entry.requirementIds.size < BASELINE_MIN_REQUIREMENTS) continue;
     suppressed.add(key);
     constraints.push({
-      id: `SEC-BASELINE-${constraints.length + 1}`,
+      id: `SEC-BASELINE-${nextNumber + constraints.length}`,
       text: entry.proposal.text,
       securityPrimitives: entry.proposal.securityPrimitives,
       addressesCWEs: entry.proposal.addressesCWEs,
@@ -294,26 +426,8 @@ function computeBaseline(report: HardeningReport): {
 }
 
 /**
- * Renders the final requirement set with every statement in strict EARS form.
- *
- * The source layout — headings, blank lines, prose, bullet lists — is preserved,
- * but each requirement *line* is replaced by its normalized form: canonical
- * uppercase keywords, one obligation per requirement, and a corrected pattern
- * tag. A compound source requirement expands into suffixed parts
- * (REQ-F-015 -> REQ-F-015a, REQ-F-015b), each on its own line.
- *
- * Security constraints are nested beneath the requirement they harden, carrying
- * their proposal ID so a reviewer can trace a clause back to the CWE report.
- * When a parent splits, the constraints attach to the *last* part, which is the
- * one holding the state mutation they guard.
- */
-/**
  * The system-name subject a requirement addresses, taken from its `THE <name>
- * SHALL` clause — e.g. `Cron_SDK` in "…, THE Cron_SDK SHALL verify ownership".
- *
- * Returns undefined for the canonical `THE SYSTEM` (nothing to rewrite) and when
- * no subject is found. Inline constraints adopt this name so a hardening line
- * reads in the spec's own voice and stays traceable to the component it guards.
+ * SHALL` clause — e.g. `Cron_SDK`. Undefined for the canonical `THE SYSTEM`.
  */
 function extractComponent(text: string): string | undefined {
   const match = text.match(/\bTHE\s+([A-Za-z][\w-]*)\s+SHALL\b/i);
@@ -323,122 +437,219 @@ function extractComponent(text: string): string | undefined {
 
 /**
  * Rewrites the canonical `THE SYSTEM` subject of a generated clause to the
- * spec's component name. Applied only at render time: the engine validates and
- * the baseline dedup keys on the canonical `THE SYSTEM` form, so the substitution
- * must not reach either.
+ * spec's component name, so inline constraints read in the spec's own voice.
  */
 function applyComponentSubject(text: string, component: string | undefined): string {
   return component ? text.replace(/\bTHE SYSTEM\b/g, `THE ${component}`) : text;
 }
 
-function formatCuratedRequirementsMarkdown(
-  sourceContent: string,
-  requirements: ParsedRequirement[],
-  report: HardeningReport,
-  suppressed: Set<string>,
-  baseline: BaselineConstraint[]
-): { content: string; warnings: SourceWarning[] } {
-  const proposalsById = new Map(
-    report.results.map((r) => [r.originalRequirement.id, r.proposedRequirements])
-  );
+/** The `THE <name> SHALL` subject of a statement, if it names one. */
+function subjectOf(text: string): string | undefined {
+  return text.match(/\bTHE\s+([A-Za-z][\w-]*)\s+SHALL\b/i)?.[1];
+}
 
-  const lines = sourceContent.split("\n");
-  const warnings: SourceWarning[] = [];
-
-  // Replacement text keyed by the line span it covers, so the rebuild below can
-  // skip continuation lines of a requirement that wrapped.
-  const replacements = new Map<number, { through: number; lines: string[] }>();
-
-  for (const requirement of requirements) {
-    const proposals = proposalsById.get(requirement.id) ?? [];
-    const sourceLine = lines[requirement.lineStart];
-
-    // The source line minus its list marker, which is re-attached after
-    // normalization so numbering and indentation survive.
-    const marker = sourceLine.match(LIST_ITEM_START)?.[0] ?? "";
-    const parentNumber = requirement.numbered
-      ? sourceLine.match(/^\s*(\d+)\./)?.[1]
-      : undefined;
-
-    const normalized = normalizeSourceRequirement(requirement.rawText);
-    warnings.push(...normalized.warnings);
-
-    const rendered: string[] = normalized.requirements.map((part, index) =>
-      // Only the first part keeps the original marker; later parts align under
-      // it, since re-using the marker would restart the source's numbering.
-      index === 0
-        ? `${marker}${part.rendered}`
-        : `${requirement.indent}${" ".repeat(marker.length - requirement.indent.length)}${part.rendered}`
-    );
-
-    // Cross-cutting clauses are dropped here — they surface once in the baseline
-    // section instead, so only requirement-specific constraints nest inline.
-    const inlineProposals = proposals.filter(
-      (p) => !suppressed.has(p.text.trim().toLowerCase())
-    );
-
-    if (inlineProposals.length > 0) {
-      // Inline constraints adopt the parent's subject (e.g. `THE Cron_SDK
-      // SHALL`) so they read in the spec's own voice and stay traceable to the
-      // component they guard. The generic `THE SYSTEM` is left alone.
-      const component = extractComponent(requirement.rawText);
-      const childIndent = `${requirement.indent}   `;
-      for (const [index, proposal] of inlineProposals.entries()) {
-        const label = parentNumber ? `${parentNumber}.${index + 1}.` : "-";
-        const tag = `[SECURITY: ${proposal.securityPrimitives.join(", ")}]`;
-        const text = applyComponentSubject(proposal.text, component);
-        rendered.push(`${childIndent}${label} ${proposal.id} ${tag} ${text}`);
-      }
-    }
-
-    replacements.set(requirement.lineStart, {
-      through: requirement.lineEnd,
-      lines: rendered,
-    });
-  }
-
-  const output: string[] = [];
-
-  for (let i = 0; i < lines.length; i++) {
-    const replacement = replacements.get(i);
-    if (replacement) {
-      output.push(...replacement.lines);
-      i = replacement.through;
-      continue;
-    }
-    output.push(lines[i]);
-  }
-
-  if (baseline.length > 0) {
-    // Trim trailing blank lines so the appended section attaches cleanly
-    // regardless of how the source file ended.
-    while (output.length > 0 && output[output.length - 1].trim() === "") {
-      output.pop();
-    }
-    output.push("");
-    output.push("## Security Baseline (Cross-Cutting)");
-    output.push("");
-    output.push(
-      "These constraints apply to every requirement above. They are stated once " +
-        "here rather than repeated under each requirement."
-    );
-    output.push("");
-    for (const constraint of baseline) {
-      const tag = `[SECURITY: ${constraint.securityPrimitives.join(", ")}]`;
-      output.push(`- ${constraint.id} ${tag} ${constraint.text}`);
-    }
-    output.push("");
-  }
-
-  return { content: output.join("\n"), warnings };
+function mostCommon(values: string[]): string | undefined {
+  const counts = new Map<string, number>();
+  for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
+  return [...counts].sort((a, b) => b[1] - a[1])[0]?.[0];
 }
 
 /**
- * Sidecar files an older two-file run may have left next to `inputPath`:
- * `<base>_hardened.md` (the report) and the final requirement list
- * (`final_requirements.md` for `requirements.md`, else `<base>_final_requirements.md`).
- * Curated hardening writes in place, so these are removed to avoid stale copies
- * lingering beside the source they no longer match.
+ * The subject baseline constraints are written in. Baseline lines apply to the
+ * whole system, so they use the spec's own name for it rather than the
+ * canonical `THE SYSTEM`:
+ *
+ *   1. the subject the existing baseline lines already use, so a section stays
+ *      in one voice;
+ *   2. otherwise a requirement subject named as the system (`Chat_System`);
+ *   3. otherwise the one subject every requirement shares.
+ *
+ * Undefined (keep `THE SYSTEM`) when none applies, rather than picking one
+ * component to speak for the whole system.
+ */
+function chooseBaselineSubject(parsed: ParsedRequirement[]): string | undefined {
+  const named = (values: (string | undefined)[]) =>
+    values.filter((v): v is string => Boolean(v) && !/^system$/i.test(v!));
+
+  const existing = named(parsed.filter((r) => r.constraint && r.inBaseline).map((r) => subjectOf(r.text)));
+  if (existing.length > 0) return mostCommon(existing);
+
+  const subjects = parsed.filter((r) => !r.constraint).map((r) => subjectOf(r.rawText));
+  const systemNamed = named(subjects).filter((s) => /(?:^|[_-])system$/i.test(s));
+  if (systemNamed.length > 0) return mostCommon(systemNamed);
+
+  const distinct = new Set(subjects.filter(Boolean));
+  if (distinct.size === 1) return named([...distinct])[0];
+  return undefined;
+}
+
+/** A constraint line's ID: the token between its list marker and its tag. */
+const CONSTRAINT_ID = /^\s*(?:[-*]|\d+(?:\.\d+)*\.)?\s*(\S+)\s+\[SECURITY:/i;
+
+/**
+ * Checks every `[SECURITY: ...]` line in the file. The engine validates the
+ * constraints it generates, but lines a reviewer wrote or rewrote by hand pass
+ * through no such gate, so they are checked here on every run.
+ */
+function checkConstraintLines(
+  parsed: ParsedRequirement[],
+  lines: string[]
+): ConstraintWarning[] {
+  const warnings: ConstraintWarning[] = [];
+  const constraints = parsed.filter((r) => r.constraint && r.securityAnnotations);
+  const parentOf = (r: ParsedRequirement) =>
+    [...parsed].reverse().find((p) => !p.constraint && p.lineEnd < r.lineStart && p.section === r.section);
+
+  const ids = new Map<string, number>();
+  for (const r of constraints) {
+    const id = lines[r.lineStart].match(CONSTRAINT_ID)?.[1];
+    if (id?.startsWith("SEC-")) ids.set(id, (ids.get(id) ?? 0) + 1);
+  }
+
+  for (const r of constraints) {
+    const parent = r.inBaseline ? undefined : parentOf(r);
+    const location = parent
+      ? `${parent.label} (line ${r.lineStart + 1})`
+      : `line ${r.lineStart + 1}`;
+    const id = lines[r.lineStart].match(CONSTRAINT_ID)?.[1];
+    const constraintId = id?.startsWith("SEC-") ? id : "(no ID)";
+    const problems: string[] = [];
+
+    if (!id?.startsWith("SEC-")) {
+      problems.push("has no constraint ID — start it with SEC-<requirement>-<source>-<n>");
+    } else if ((ids.get(id) ?? 0) > 1) {
+      problems.push(`reuses ID ${id}, which another constraint line also has`);
+    }
+    problems.push(...validateConstraintStatement(r.text).errors);
+
+    if (problems.length > 0) {
+      warnings.push({ location, constraintId, message: problems.join("; ") });
+    }
+  }
+  return warnings;
+}
+
+/** Lines of the review marker block, so they can be replaced as one unit. */
+function findMarker(lines: string[]): { start: number; end: number; hashes: Set<string> } | undefined {
+  const start = lines.findIndex((line) => line.includes("<!-- spec-it-safe:reviewed"));
+  if (start < 0) return undefined;
+  let end = start;
+  while (end < lines.length && !lines[end].includes("-->")) end++;
+  const block = lines.slice(start, end + 1).join("\n");
+  const body = block.match(REVIEW_MARKER)?.[1] ?? "";
+  return { start, end, hashes: new Set(body.match(/[0-9a-f]{12}/g) ?? []) };
+}
+
+/**
+ * Keeps recorded hashes in their existing order and appends new ones, so a
+ * re-run changes only the marker's last rows.
+ */
+function renderMarker(hashes: Iterable<string>): string[] {
+  const ordered = [...new Set(hashes)];
+  const rows: string[] = [];
+  for (let i = 0; i < ordered.length; i += 8) rows.push(ordered.slice(i, i + 8).join(" "));
+  return [
+    "<!-- spec-it-safe:reviewed v1",
+    "Requirements already hardened by Spec It Safe, as hashes of their text.",
+    "A re-run hardens only requirements whose hash is missing here.",
+    ...rows,
+    "-->",
+  ];
+}
+
+/**
+ * Where hardening inserts lines, keyed by the 0-based index of the original
+ * line they follow (-1 for the file start).
+ */
+type Insertions = Map<number, string[]>;
+
+function insert(insertions: Insertions, after: number, lines: string[]): void {
+  if (lines.length === 0) return;
+  insertions.set(after, [...(insertions.get(after) ?? []), ...lines]);
+}
+
+/**
+ * Applies insertions and the marker replacement, then proves the result keeps
+ * every original line, unchanged and in order. Any failure is a defect in this
+ * tool, so it throws instead of writing a file that changed the user's text.
+ */
+function applyInsertions(
+  original: string[],
+  insertions: Insertions,
+  marker: { start: number; end: number } | undefined,
+  markerLines: string[]
+): { content: string; added: AddedLine[] } {
+  const output: string[] = [];
+  const added: AddedLine[] = [];
+  const isMarkerLine = (i: number) => marker !== undefined && i >= marker.start && i <= marker.end;
+
+  const emit = (after: number, lines: string[]) => {
+    for (const text of lines) {
+      output.push(text);
+      added.push({ after: after + 1, text });
+    }
+  };
+
+  emit(-1, insertions.get(-1) ?? []);
+  for (let i = 0; i < original.length; i++) {
+    if (!isMarkerLine(i)) output.push(original[i]);
+    emit(i, insertions.get(i) ?? []);
+  }
+
+  // Trailing blank lines of the original stay at the very end; the marker
+  // follows the last content line.
+  while (output.length > 0 && output[output.length - 1] === "") output.pop();
+  const trailingNewline = original[original.length - 1] === "";
+  output.push("", ...markerLines);
+  if (trailingNewline) output.push("");
+
+  let cursor = 0;
+  for (let i = 0; i < original.length; i++) {
+    if (isMarkerLine(i) || (original[i] === "" && i >= original.length - 1)) continue;
+    while (cursor < output.length && output[cursor] !== original[i]) cursor++;
+    if (cursor >= output.length) {
+      throw new Error(
+        `refusing to write: line ${i + 1} of the original would not be preserved unchanged`
+      );
+    }
+    cursor++;
+  }
+
+  return { content: output.join("\n"), added };
+}
+
+/**
+ * True when the file carries hardening output: inline `[SECURITY: ...]`
+ * constraints, the baseline section, or the review marker.
+ */
+function isHardened(content: string): boolean {
+  return (
+    content.includes("[SECURITY:") ||
+    content.includes(BASELINE_HEADING) ||
+    REVIEW_MARKER.test(content)
+  );
+}
+
+function emptyReport(reqs: Requirement[]): HardeningReport {
+  return {
+    timestamp: new Date().toISOString(),
+    inputRequirements: reqs,
+    results: [],
+    summary: {
+      totalRequirements: reqs.length,
+      requirementsWithGaps: 0,
+      totalCWEsTriggered: 0,
+      totalProposedAdditions: 0,
+      criticalGaps: 0,
+      overallSecurityScore: 1,
+    },
+  };
+}
+
+/**
+ * Sidecar files an older two-file run may have left next to `inputPath`.
+ * Curated hardening writes in place, so these are removed to avoid stale
+ * copies lingering beside the source they no longer match.
  */
 async function removeStaleArtifacts(inputPath: string): Promise<string[]> {
   const dir = dirname(inputPath);
@@ -463,103 +674,297 @@ async function removeStaleArtifacts(inputPath: string): Promise<string[]> {
 }
 
 /**
- * Hardens one requirements file, editing it in place.
+ * Hardens one requirements file in place.
  *
- * The source layout is preserved; requirement lines are normalized to strict
- * EARS, requirement-specific constraints are nested beneath the requirement they
- * guard, and cross-cutting constraints are consolidated into a single Security
- * Baseline section. Because every added line is valid EARS carrying a
- * `[SECURITY: ...]` tag, re-running is idempotent — already-stated constraints
- * are recognized and not re-proposed.
+ * Original lines are never changed, moved or removed: requirement-specific
+ * `[SECURITY: ...]` constraints are inserted beneath the requirement they
+ * guard, cross-cutting ones are added to a single Security Baseline section,
+ * and a hidden review marker records which requirements were hardened. A
+ * re-run hardens only requirements added or changed since — so no copy of the
+ * pre-hardening spec is ever needed — and constraints a reviewer removed are
+ * not proposed again for requirements already reviewed.
  */
-/**
- * True when the file already carries hardening output — inline `[SECURITY: ...]`
- * constraints or the baseline section. Such a file is skipped: its EARS-split
- * requirement lines and injected constraints do not round-trip back through the
- * parser, so re-hardening in place would corrupt rather than extend it.
- */
-function isAlreadyHardened(content: string): boolean {
-  return (
-    content.includes("[SECURITY:") ||
-    content.includes("## Security Baseline (Cross-Cutting)")
-  );
-}
-
-function emptyReport(reqs: Requirement[]): HardeningReport {
-  return {
-    timestamp: new Date().toISOString(),
-    inputRequirements: reqs,
-    results: [],
-    summary: {
-      totalRequirements: reqs.length,
-      requirementsWithGaps: 0,
-      totalCWEsTriggered: 0,
-      totalProposedAdditions: 0,
-      criticalGaps: 0,
-      overallSecurityScore: 1,
-    },
-  };
-}
-
 async function curateInPlace(
   filePath: string,
   content: string,
-  requirements: ParsedRequirement[],
+  parsed: ParsedRequirement[],
   engine: HardeningEngine,
-  options?: HardeningOptions
+  options: HardenFileOptions = {}
 ): Promise<HardenFileResult> {
-  const reqs: Requirement[] = requirements.map((r) => ({
+  const sources = parsed.filter((r) => !r.constraint);
+  const reqs: Requirement[] = parsed.map((r) => ({
     id: r.id,
     text: r.text,
     earsPattern: r.earsPattern,
     securityAnnotations: r.securityAnnotations,
   }));
 
-  if (isAlreadyHardened(content)) {
-    return {
-      inputPath: filePath,
-      outputPath: filePath,
-      requirementsFound: requirements.length,
-      baselineConstraints: 0,
-      removedArtifacts: [],
-      skipped: true,
-      report: emptyReport(reqs),
-      sourceWarnings: [],
-      anchorWarnings: [],
-      semanticCandidates: [],
-    };
-  }
+  const lines = content.split("\n");
+  const marker = findMarker(lines);
+  const hashes = new Map(sources.map((r) => [r.id, requirementHash(r.rawText)]));
+  const allHashes = [...(marker?.hashes ?? []), ...hashes.values()];
 
-  const report = engine.harden(reqs, options);
-  const { suppressed, constraints } = computeBaseline(report);
-  const curated = formatCuratedRequirementsMarkdown(
-    content,
-    requirements,
-    report,
-    suppressed,
-    constraints
-  );
-
-  await writeFile(filePath, curated.content, "utf-8");
-  const removedArtifacts = await removeStaleArtifacts(filePath);
-
-  return {
+  const base = {
     inputPath: filePath,
     outputPath: filePath,
-    requirementsFound: requirements.length,
-    baselineConstraints: constraints.length,
-    removedArtifacts,
-    skipped: false,
+    requirementsFound: sources.length,
+    removedArtifacts: [] as string[],
+    dryRun: Boolean(options.dryRun),
+    sourceWarnings: [] as SourceWarning[],
+    anchorWarnings: [] as AnchorWarning[],
+    suppressedConstraints: [] as SuppressedConstraint[],
+    specializationWarnings: [] as ConstraintWarning[],
+    constraintWarnings: checkConstraintLines(parsed, lines),
+    foldedDuplicates: 0,
+    semanticCandidates: [] as SemanticCandidate[],
+  };
+  const untouched = (mode: HardenMode): HardenFileResult => ({
+    ...base,
+    requirementsHardened: 0,
+    baselineConstraints: 0,
+    mode,
+    skipped: true,
+    addedLines: [],
+    report: emptyReport(reqs),
+  });
+
+  const hardened = isHardened(content);
+  const labelOf = (id: string) => {
+    const r = parsed.find((p) => p.id === id);
+    return r ? `${r.label} (line ${r.lineStart + 1})` : id;
+  };
+  const earsWarnings = (requirements: ParsedRequirement[]): SourceWarning[] =>
+    requirements.flatMap((requirement) => {
+      const validation = validateSourceRequirement(requirement.rawText);
+      return validation.valid
+        ? []
+        : [{
+            requirementId: labelOf(requirement.id),
+            message: `source requirement is not strict EARS: ${validation.errors.join("; ")}`,
+          }];
+    });
+
+  if (options.check) {
+    return { ...untouched("checked"), skipped: false, sourceWarnings: earsWarnings(sources) };
+  }
+
+  if (options.markReviewed) {
+    const result = applyInsertions(lines, new Map(), marker, renderMarker(allHashes));
+    if (!options.dryRun) await writeFile(filePath, result.content, "utf-8");
+    return { ...untouched("marked"), skipped: false, addedLines: result.added };
+  }
+
+  if (hardened && !marker) return untouched("unrecorded");
+
+  const targets = sources.filter((r) => !marker?.hashes.has(hashes.get(r.id)!));
+  if (targets.length === 0) return untouched("up-to-date");
+
+  const report = engine.harden(reqs, {
+    ...options,
+    specContext: options.specContext ?? detectSpecContext(content),
+    targetRequirementIds: targets.map((r) => r.id),
+  });
+
+  // Clauses the document already states — inline or in the baseline, as added
+  // by this tool or rewritten by a reviewer — are not added again.
+  const existingClauses = new Set(
+    parsed.filter((r) => r.constraint).map((r) => clauseKey(r.text))
+  );
+  const existingIds = new Set(content.match(/\bSEC-[\w.-]*\w/g) ?? []);
+  const uniqueId = (id: string): string => {
+    let candidate = id;
+    for (let n = 2; existingIds.has(candidate); n++) candidate = `${id}-${n}`;
+    existingIds.add(candidate);
+    return candidate;
+  };
+
+  const baselineNumbers = [...content.matchAll(/\bSEC-BASELINE-(\d+)\b/g)].map((m) => Number(m[1]));
+  const { suppressed, constraints } = computeBaseline(
     report,
-    sourceWarnings: curated.warnings,
-    anchorWarnings: engine.getAnchorWarnings(),
+    Math.max(0, ...baselineNumbers) + 1
+  );
+  const baselineSubject = chooseBaselineSubject(parsed);
+  const newBaseline = constraints.filter(
+    (c) =>
+      !existingClauses.has(clauseKey(c.text)) &&
+      !existingClauses.has(clauseKey(applyComponentSubject(c.text, baselineSubject)))
+  );
+
+  const insertions: Insertions = new Map();
+  const byId = new Map(parsed.map((r) => [r.id, r]));
+  // Proposal ID -> the ID of the line that states it in the file, so warnings
+  // name lines a reader can find. Lifted clauses map to their baseline ID.
+  const writtenIds = new Map<string, string>();
+  let hardenedCount = 0;
+  // Within one "Requirement N" section, a clause proposed under several
+  // criteria is written once, under the first. The criteria of a section
+  // describe one feature, so repeating the same upload or error-handling block
+  // under each adds nothing. Clause key -> the ID it was written under.
+  const writtenInSection = new Map<string, Map<string, string>>();
+  let foldedDuplicates = 0;
+
+  for (const result of report.results) {
+    const requirement = byId.get(result.originalRequirement.id)!;
+    const component = extractComponent(requirement.rawText);
+    const sectionClauses = requirement.section
+      ? writtenInSection.get(requirement.section) ??
+        writtenInSection.set(requirement.section, new Map()).get(requirement.section)!
+      : new Map<string, string>();
+    const inline = result.proposedRequirements.filter((p) => {
+      if (suppressed.has(clauseKey(p.text))) return false;
+      if (existingClauses.has(clauseKey(applyComponentSubject(p.text, component)))) return false;
+      const earlier = sectionClauses.get(clauseKey(p.text));
+      if (earlier) {
+        writtenIds.set(p.id, earlier);
+        foldedDuplicates++;
+        return false;
+      }
+      return true;
+    });
+    if (inline.length === 0) continue;
+    hardenedCount++;
+
+    // New constraints go after any the requirement already has.
+    const children = childrenOf(parsed, requirement);
+    const anchor = children.length > 0 ? children[children.length - 1].lineEnd : requirement.lineEnd;
+
+    const sourceLine = lines[requirement.lineStart];
+    const listMarker = sourceLine.match(LIST_ITEM_START)?.[0] ?? requirement.indent;
+    const parentNumber = requirement.numbered ? sourceLine.match(/^\s*(\d+)\./)?.[1] : undefined;
+    const childIndent = " ".repeat(Math.max(listMarker.length, requirement.indent.length + 3));
+
+    insert(
+      insertions,
+      anchor,
+      inline.map((proposal, index) => {
+        const label = parentNumber ? `${parentNumber}.${children.length + index + 1}.` : "-";
+        const tag = `[SECURITY: ${proposal.securityPrimitives.join(", ")}]`;
+        const text = applyComponentSubject(proposal.text, component);
+        const id = uniqueId(proposal.id);
+        writtenIds.set(proposal.id, id);
+        sectionClauses.set(clauseKey(proposal.text), id);
+        return `${childIndent}${label} ${id} ${tag} ${text}`;
+      })
+    );
+  }
+
+  if (newBaseline.length > 0) {
+    const baselineIds = new Map<string, string>();
+    const entries = newBaseline.map((c) => {
+      const tag = `[SECURITY: ${c.securityPrimitives.join(", ")}]`;
+      const id = uniqueId(c.id);
+      baselineIds.set(clauseKey(c.text), id);
+      return `- ${id} ${tag} ${applyComponentSubject(c.text, baselineSubject)}`;
+    });
+    for (const result of report.results) {
+      for (const p of result.proposedRequirements) {
+        const id = baselineIds.get(clauseKey(p.text));
+        if (id) writtenIds.set(p.id, id);
+      }
+    }
+    const headingAt = lines.findIndex((l) => l.trim() === BASELINE_HEADING);
+    if (headingAt >= 0) {
+      // Append to the existing section, after its last non-blank line.
+      let end = headingAt + 1;
+      while (end < lines.length && headingLevel(lines[end]) === 0 && !lines[end].includes("<!-- spec-it-safe:reviewed")) end++;
+      let last = end - 1;
+      while (last > headingAt && lines[last].trim() === "") last--;
+      insert(insertions, last, entries);
+    } else {
+      let last = lines.length - 1;
+      while (last >= 0 && (lines[last].trim() === "" || (marker && last >= marker.start))) last--;
+      insert(insertions, last, [
+        "",
+        BASELINE_HEADING,
+        "",
+        "These constraints apply to every requirement above. They are stated once " +
+          "here rather than repeated under each requirement.",
+        "",
+        ...entries,
+      ]);
+    }
+  }
+
+  const written = applyInsertions(lines, insertions, marker, renderMarker(allHashes));
+
+  let removedArtifacts: string[] = [];
+  if (!options.dryRun) {
+    await writeFile(filePath, written.content, "utf-8");
+    removedArtifacts = await removeStaleArtifacts(filePath);
+  }
+
+  const sourceWarnings = earsWarnings(targets);
+
+  const specializationWarnings: ConstraintWarning[] = [];
+  const warnedIds = new Set<string>();
+  for (const result of report.results) {
+    for (const p of result.proposedRequirements) {
+      const id = writtenIds.get(p.id);
+      if (!id || !p.genericSlots || warnedIds.has(id)) continue;
+      warnedIds.add(id);
+      specializationWarnings.push({
+        location: labelOf(result.originalRequirement.id),
+        constraintId: id,
+        message:
+          `built with generic text ${p.genericSlots
+            .map((g) => `"${g.filledWith}" for {${g.slot}}`)
+            .join(", ")} because the requirement does not name one — ` +
+          `rewrite the constraint in this requirement's terms`,
+      });
+    }
+  }
+
+  return {
+    ...base,
+    removedArtifacts,
+    requirementsHardened: hardenedCount,
+    baselineConstraints: newBaseline.length,
+    mode: marker ? "incremental" : "full",
+    skipped: false,
+    addedLines: written.added,
+    report,
+    sourceWarnings,
+    specializationWarnings,
+    foldedDuplicates,
+    anchorWarnings: engine.getAnchorWarnings().flatMap((w) => {
+      const ids = [
+        ...new Set(
+          w.constraintId
+            .split(", ")
+            .map((id) => writtenIds.get(id))
+            .filter((id): id is string => Boolean(id))
+        ),
+      ];
+      // Nothing written (already stated in the document): nothing to review.
+      if (ids.length === 0) return [];
+      return [{ ...w, requirementId: labelOf(w.requirementId), constraintId: ids.join(", ") }];
+    }),
+    suppressedConstraints: engine
+      .getSuppressedConstraints()
+      .map((s) => ({ ...s, requirementId: labelOf(s.requirementId) })),
     semanticCandidates: engine.getSemanticCandidates(),
   };
 }
 
+/** The constraint lines directly beneath a requirement, in order. */
+function childrenOf(
+  parsed: ParsedRequirement[],
+  requirement: ParsedRequirement
+): ParsedRequirement[] {
+  const children: ParsedRequirement[] = [];
+  let next = requirement.lineEnd + 1;
+  for (const r of parsed) {
+    if (r.lineStart < next) continue;
+    if (r.lineStart !== next || !r.constraint) break;
+    children.push(r);
+    next = r.lineEnd + 1;
+  }
+  return children;
+}
+
 export async function hardenMarkdownFile(
   filePath: string,
-  options?: HardeningOptions
+  options?: HardenFileOptions
 ): Promise<HardenFileResult | null> {
   const resolved = resolve(filePath);
   const content = await readFile(resolved, "utf-8");
@@ -592,7 +997,7 @@ async function collectMarkdownFiles(dir: string): Promise<string[]> {
 
 export async function hardenMarkdownFiles(
   inputs: string[],
-  options?: HardeningOptions
+  options?: HardenFileOptions
 ): Promise<HardenFileResult[]> {
   const files: string[] = [];
 

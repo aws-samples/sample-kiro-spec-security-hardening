@@ -1,0 +1,245 @@
+import { atomizeTemplate, normalizeEARSClause, validateEARSClause, classifyEARSPattern, } from "./ears-normalizer.js";
+/**
+ * EARS checks for *source* requirements.
+ *
+ * Hardening never rewrites a source requirement: splitting, re-tagging or
+ * moving a clause can change what the requirement obliges ("create and write
+ * files only inside X" split at "and write" loses "only inside X" from its
+ * first half). `validateSourceRequirement` is what the hardening pass uses — it
+ * only reports. `normalizeSourceRequirement` remains as a library function for
+ * callers who want a normalized rendering and review it themselves.
+ *
+ * `ears-normalizer` governs the clauses this library generates. This module
+ * governs the clauses it is given: the hand-authored requirements in a spec,
+ * which arrive with their own defects — lowercase keywords, a `[Event-driven]`
+ * annotation ahead of the text, and compound responses joining two obligations
+ * with a bare `and`.
+ *
+ * The two cases differ in one way that matters. A generated clause that cannot
+ * be repaired is a library bug, so it is rejected. A source clause that cannot
+ * be repaired is the user's text, so it is passed through with a warning: a
+ * hardening tool that silently discards a requirement it failed to parse is far
+ * more dangerous than one that reports it could not normalize it.
+ *
+ * Splitting a compound requirement changes its identity, so each part is
+ * suffixed — REQ-F-015 becomes REQ-F-015a and REQ-F-015b. Suffixing rather than
+ * renumbering keeps the original ID a resolvable prefix, so traceability records
+ * that map REQ-F-015 to an upstream rule still resolve.
+ */
+/** A requirement ID and its EARS pattern annotation, as written in the source. */
+const REQUIREMENT_PREFIX = /^([A-Z][\w-]*-[\w-]*\d+)\s*:\s*(?:\[([^\]]+)\]\s*)?/;
+/**
+ * Verbs that begin a genuine second obligation.
+ *
+ * Source prose rarely repeats `shall` on a second obligation ("shall compute X
+ * and update Y"), so the `AND SHALL` rule in `ears-normalizer` never fires on it.
+ * Restricting the split to a known verb set is what keeps "account ID, current
+ * balance, and confirmation" — a noun list — from being mistaken for one.
+ */
+const OBLIGATION_VERBS = new Set([
+    "compute", "update", "write", "read", "display", "redisplay", "clear",
+    "return", "send", "store", "record", "create", "delete", "modify",
+    "validate", "verify", "reject", "accept", "log", "emit", "alert",
+    "invalidate", "issue", "apply", "enforce", "block", "flag", "notify",
+    "set", "add", "remove", "insert", "post", "transfer", "increment",
+    "decrement", "format", "populate", "initialize", "reset", "commit",
+    "roll", "abort", "retry", "queue", "dispatch", "route", "transition",
+    "determine", "retrieve", "generate", "calculate", "append", "confirm",
+    "release", "acquire", "lock", "unlock", "mask", "redact", "purge",
+]);
+/**
+ * Renders an EARS pattern as the bracketed annotation used in the specs.
+ *
+ * Only the first word is capitalized — the existing specs write
+ * `[Event-driven]`, not `[Event-Driven]`, and the tag is prose rather than a
+ * structural keyword.
+ */
+function formatPatternTag(pattern) {
+    return pattern.charAt(0).toUpperCase() + pattern.slice(1);
+}
+/**
+ * Splits a source response clause into its separate obligations.
+ *
+ * Handles both the two-part form ("shall compute X and update Y") and the serial
+ * form ("shall clear X, display Y, and redisplay Z"). Each part inherits the
+ * subject and modal the source elides, so "and update the account record" becomes
+ * "THE SYSTEM SHALL update the account record".
+ *
+ * Splitting is gated on `OBLIGATION_VERBS`, which is what separates a list of
+ * obligations from a list of nouns: "clear all input fields (account ID, current
+ * balance, and confirmation)" has a comma-and list inside it, but `confirmation`
+ * is not an obligation verb, so the clause stays whole.
+ */
+function splitCompoundResponse(text) {
+    const shallMatch = text.match(/\b(shall|SHALL)\b/);
+    if (!shallMatch?.index)
+        return [text];
+    const head = text.slice(0, shallMatch.index + shallMatch[0].length);
+    const response = text.slice(shallMatch.index + shallMatch[0].length);
+    const parts = splitObligations(response);
+    if (parts.length <= 1)
+        return [text];
+    return parts.map((part) => `${head} ${part}`);
+}
+/**
+ * Splits a response body at each boundary that begins a new obligation.
+ *
+ * A boundary is a comma or `and` followed by a known obligation verb. Scanning
+ * for the verb — rather than splitting on punctuation and inspecting after — is
+ * what keeps parenthesised noun lists and non-obligation subordinate clauses
+ * intact.
+ */
+function splitObligations(response) {
+    const boundaries = [];
+    const pattern = /(,\s+and\s+|,\s+|\s+and\s+)(?=(?:also\s+)?(?:then\s+)?([a-z]+))/g;
+    let match;
+    while ((match = pattern.exec(response)) !== null) {
+        const verb = match[2];
+        if (!OBLIGATION_VERBS.has(verb.toLowerCase()))
+            continue;
+        // Never split inside a parenthesised aside — "(account ID, current balance,
+        // and confirmation)" is one field list belonging to a single obligation.
+        if (isInsideParentheses(response, match.index))
+            continue;
+        boundaries.push({ start: match.index, end: match.index + match[1].length });
+    }
+    if (boundaries.length === 0)
+        return [response.trim()];
+    const parts = [];
+    let cursor = 0;
+    for (const boundary of boundaries) {
+        parts.push(response.slice(cursor, boundary.start).trim());
+        cursor = boundary.end;
+    }
+    parts.push(response.slice(cursor).trim());
+    return parts.filter(Boolean);
+}
+/** True when `index` falls between an unclosed `(` and its `)`. */
+function isInsideParentheses(text, index) {
+    let depth = 0;
+    for (let i = 0; i < index; i++) {
+        if (text[i] === "(")
+            depth++;
+        else if (text[i] === ")")
+            depth = Math.max(0, depth - 1);
+    }
+    return depth > 0;
+}
+/**
+ * Validation errors that concern the shape of *generated* clauses, not the
+ * grammar of a hand-written requirement. A source requirement may hold two
+ * obligations, carry a "before ..." qualifier, or contain braces in a code
+ * literal and still be well-formed EARS.
+ */
+const GENERATED_ONLY_ERRORS = [
+    /^clause is compound/,
+    /^response contains an embedded precondition/,
+    /^unsubstituted placeholder/,
+    /^malformed trigger/,
+];
+/**
+ * Canonical keyword casing, applied only to the copy being checked: the source
+ * line itself is never rewritten.
+ */
+function canonicalCase(text) {
+    let result = text.trim().replace(/\s+/g, " ");
+    result = result.replace(/^(if|when|while|where)\b/i, (kw) => kw.toUpperCase());
+    const shallAt = result.search(/\bshall\b/i);
+    if (shallAt > 0) {
+        result =
+            result
+                .slice(0, shallAt)
+                .replace(/,\s*(if|when|while|where|then)\b/gi, (_, kw) => `, ${kw.toUpperCase()}`) +
+                result.slice(shallAt);
+    }
+    return result.replace(/\bshall\b/gi, "SHALL");
+}
+/**
+ * Checks one source requirement against the EARS grammar without changing it.
+ *
+ * Returns the problems a human must fix — no SHALL, no named actor, an `IF`
+ * without `THEN`, an unclosed precondition, a passive obligation. `line` may
+ * carry a `REQ-x:` prefix and a `[Pattern]` tag; both are ignored.
+ */
+export function validateSourceRequirement(line) {
+    const prefixMatch = line.match(REQUIREMENT_PREFIX);
+    const body = prefixMatch ? line.slice(prefixMatch[0].length) : line;
+    const validation = validateEARSClause(canonicalCase(body));
+    const errors = validation.errors.filter((error) => !GENERATED_ONLY_ERRORS.some((pattern) => pattern.test(error)));
+    return { valid: errors.length === 0, pattern: validation.pattern, errors };
+}
+/**
+ * Errors a `[SECURITY: ...]` constraint line may carry and still be fine: a
+ * "before ..." qualifier in the response is a style choice, not a defect.
+ */
+const CONSTRAINT_TOLERATED_ERRORS = [/^response contains an embedded precondition/];
+/**
+ * Checks one `[SECURITY: ...]` constraint statement — tag and ID removed — as
+ * strictly as a generated one: one obligation per line, a named actor, a
+ * well-formed trigger. Constraints are what a coding agent implements one by
+ * one, so "SHALL scope X AND SHALL NOT grant Y" is reported as two
+ * obligations even though a hand-written source requirement may join them.
+ */
+export function validateConstraintStatement(text) {
+    const errors = validateEARSClause(canonicalCase(text)).errors.filter((error) => !CONSTRAINT_TOLERATED_ERRORS.some((pattern) => pattern.test(error)));
+    return { valid: errors.length === 0, errors };
+}
+/**
+ * Normalizes one source requirement line into one or more strict-EARS
+ * requirements.
+ *
+ * `line` is the requirement text as written, including its `REQ-x:` prefix and
+ * any `[Pattern]` annotation. Both are stripped, the body is normalized, and the
+ * prefix is rebuilt from the pattern actually detected — a source tagged
+ * `[Event-driven]` whose text is ubiquitous gets a corrected tag rather than the
+ * one it claimed.
+ */
+export function normalizeSourceRequirement(line) {
+    const warnings = [];
+    const prefixMatch = line.match(REQUIREMENT_PREFIX);
+    const sourceId = prefixMatch?.[1] ?? "";
+    const body = prefixMatch ? line.slice(prefixMatch[0].length).trim() : line.trim();
+    // Sentence- and conjunction-level atomization, shared with the generated path,
+    // then the source-only bare-`and` split.
+    const atoms = atomizeTemplate(body).flatMap((atom) => splitCompoundResponse(atom));
+    const multi = atoms.length > 1;
+    const requirements = atoms.map((atom, index) => {
+        const text = normalizeEARSClause(atom);
+        const validation = validateEARSClause(text);
+        const pattern = validation.pattern ?? classifyEARSPattern(text) ?? "ubiquitous";
+        // Suffix only on a genuine split, so an unsplit requirement keeps its ID.
+        // A requirement written as a bare numbered list item has no ID to suffix;
+        // its list number is its identity and lives outside the text.
+        const id = multi && sourceId
+            ? `${sourceId}${String.fromCharCode(97 + index)}`
+            : sourceId;
+        if (!validation.valid) {
+            warnings.push({
+                requirementId: id,
+                message: `source requirement is not strict EARS: ${validation.errors.join("; ")}`,
+            });
+        }
+        return {
+            id,
+            sourceId,
+            text,
+            // Omit the `ID:` prefix entirely when the source had none, rather than
+            // emitting a bare separator.
+            rendered: id
+                ? `${id}: [${formatPatternTag(pattern)}] ${text}`
+                : `[${formatPatternTag(pattern)}] ${text}`,
+            earsPattern: pattern,
+            split: multi,
+        };
+    });
+    if (multi) {
+        warnings.push({
+            requirementId: sourceId,
+            message: `compound requirement split into ${requirements.length} atomic requirements (${requirements
+                .map((r) => r.id)
+                .join(", ")})`,
+        });
+    }
+    return { requirements, warnings };
+}
+//# sourceMappingURL=source-normalizer.js.map

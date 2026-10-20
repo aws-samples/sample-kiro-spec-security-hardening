@@ -7,7 +7,14 @@ import {
 import type { EARSPattern } from "../types/index.js";
 
 /**
- * Strict EARS enforcement for *source* requirements.
+ * EARS checks for *source* requirements.
+ *
+ * Hardening never rewrites a source requirement: splitting, re-tagging or
+ * moving a clause can change what the requirement obliges ("create and write
+ * files only inside X" split at "and write" loses "only inside X" from its
+ * first half). `validateSourceRequirement` is what the hardening pass uses — it
+ * only reports. `normalizeSourceRequirement` remains as a library function for
+ * callers who want a normalized rendering and review it themselves.
  *
  * `ears-normalizer` governs the clauses this library generates. This module
  * governs the clauses it is given: the hand-authored requirements in a spec,
@@ -156,6 +163,81 @@ function isInsideParentheses(text: string, index: number): boolean {
     else if (text[i] === ")") depth = Math.max(0, depth - 1);
   }
   return depth > 0;
+}
+
+/**
+ * Validation errors that concern the shape of *generated* clauses, not the
+ * grammar of a hand-written requirement. A source requirement may hold two
+ * obligations, carry a "before ..." qualifier, or contain braces in a code
+ * literal and still be well-formed EARS.
+ */
+const GENERATED_ONLY_ERRORS = [
+  /^clause is compound/,
+  /^response contains an embedded precondition/,
+  /^unsubstituted placeholder/,
+  /^malformed trigger/,
+];
+
+/**
+ * Canonical keyword casing, applied only to the copy being checked: the source
+ * line itself is never rewritten.
+ */
+function canonicalCase(text: string): string {
+  let result = text.trim().replace(/\s+/g, " ");
+  result = result.replace(/^(if|when|while|where)\b/i, (kw) => kw.toUpperCase());
+  const shallAt = result.search(/\bshall\b/i);
+  if (shallAt > 0) {
+    result =
+      result
+        .slice(0, shallAt)
+        .replace(/,\s*(if|when|while|where|then)\b/gi, (_, kw) => `, ${kw.toUpperCase()}`) +
+      result.slice(shallAt);
+  }
+  return result.replace(/\bshall\b/gi, "SHALL");
+}
+
+/**
+ * Checks one source requirement against the EARS grammar without changing it.
+ *
+ * Returns the problems a human must fix — no SHALL, no named actor, an `IF`
+ * without `THEN`, an unclosed precondition, a passive obligation. `line` may
+ * carry a `REQ-x:` prefix and a `[Pattern]` tag; both are ignored.
+ */
+export function validateSourceRequirement(line: string): {
+  valid: boolean;
+  pattern?: EARSPattern;
+  errors: string[];
+} {
+  const prefixMatch = line.match(REQUIREMENT_PREFIX);
+  const body = prefixMatch ? line.slice(prefixMatch[0].length) : line;
+  const validation = validateEARSClause(canonicalCase(body));
+  const errors = validation.errors.filter(
+    (error) => !GENERATED_ONLY_ERRORS.some((pattern) => pattern.test(error))
+  );
+  return { valid: errors.length === 0, pattern: validation.pattern, errors };
+}
+
+/**
+ * Errors a `[SECURITY: ...]` constraint line may carry and still be fine: a
+ * "before ..." qualifier in the response is a style choice, not a defect.
+ */
+const CONSTRAINT_TOLERATED_ERRORS = [/^response contains an embedded precondition/];
+
+/**
+ * Checks one `[SECURITY: ...]` constraint statement — tag and ID removed — as
+ * strictly as a generated one: one obligation per line, a named actor, a
+ * well-formed trigger. Constraints are what a coding agent implements one by
+ * one, so "SHALL scope X AND SHALL NOT grant Y" is reported as two
+ * obligations even though a hand-written source requirement may join them.
+ */
+export function validateConstraintStatement(text: string): {
+  valid: boolean;
+  errors: string[];
+} {
+  const errors = validateEARSClause(canonicalCase(text)).errors.filter(
+    (error) => !CONSTRAINT_TOLERATED_ERRORS.some((pattern) => pattern.test(error))
+  );
+  return { valid: errors.length === 0, errors };
 }
 
 /**

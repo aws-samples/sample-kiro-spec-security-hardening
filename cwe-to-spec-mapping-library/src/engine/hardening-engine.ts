@@ -7,12 +7,15 @@ import type {
   SemanticCandidate,
   EARSPattern,
   CWEMapping,
+  SpecContext,
+  SuppressedConstraint,
 } from "../types/index.js";
+import { contextSuppressionReason } from "./spec-context.js";
+import { fillTemplate, resolveTemplate } from "./template-filler.js";
 import { TriggerDetector } from "./trigger-detector.js";
 import { CoverageChecker, type CoverageGap } from "./coverage-checker.js";
 import {
   classifyEARSPattern,
-  isValidActorPhrase,
   toValidEARSClauses,
 } from "./ears-normalizer.js";
 import { checkConstraintAnchoring, type AnchorWarning } from "./anchor-checker.js";
@@ -39,6 +42,20 @@ export interface HardeningOptions {
    * signal, not noise. `all` surfaces every sub-threshold hit for a full sweep.
    */
   semanticCandidateScope?: SemanticCandidateScope;
+  /**
+   * Document-level context (see `detectSpecContext`). When given, constraints
+   * for technology the spec does not use, or that the spec declares out of
+   * scope, are withheld and reported by `getSuppressedConstraints`. When
+   * omitted, no constraint is withheld on context grounds.
+   */
+  specContext?: SpecContext;
+  /**
+   * IDs of the requirements to harden. Every requirement passed to `harden`
+   * still counts toward coverage, so a constraint already stated elsewhere is
+   * not proposed again; only these ones receive proposals. Used for
+   * incremental runs over a spec that was already hardened. All when omitted.
+   */
+  targetRequirementIds?: string[];
 }
 
 /**
@@ -52,17 +69,12 @@ export interface RejectedClause {
   errors: string[];
 }
 
-/**
- * Verbs that disqualify a captured phrase from an `{input_description}` slot,
- * which must hold a noun phrase.
- */
-const VERB_TOKENS_FOR_INPUT = new Set([
-  "submits", "submit", "presses", "press", "enters", "enter",
-  "requests", "request", "is", "are", "was", "were", "shall", "will",
-  "occurs", "occur", "fails", "fail", "detected", "received",
-]);
+type ResolvedOptions = Required<
+  Omit<HardeningOptions, "specContext" | "targetRequirementIds">
+> &
+  Pick<HardeningOptions, "specContext" | "targetRequirementIds">;
 
-const DEFAULT_OPTIONS: Required<HardeningOptions> = {
+const DEFAULT_OPTIONS: ResolvedOptions = {
   confidenceThreshold: 0.3,
   includeLowSeverity: true,
   maxProposalsPerRequirement: 10,
@@ -77,6 +89,7 @@ export class HardeningEngine {
   private rejectedClauses: RejectedClause[] = [];
   private anchorWarnings: AnchorWarning[] = [];
   private semanticCandidates: SemanticCandidate[] = [];
+  private suppressedConstraints: SuppressedConstraint[] = [];
 
   constructor(mappings: CWEMapping[] = allMappings) {
     this.mappings = mappings;
@@ -114,6 +127,16 @@ export class HardeningEngine {
     return [...this.semanticCandidates];
   }
 
+  /**
+   * Constraints withheld during the most recent `harden` call because the
+   * spec's context rules them out — no database for SQL injection, TLS declared
+   * out of scope — or because the requirement does not do what the constraint
+   * guards (a password-storage rule on a requirement that only sends one).
+   */
+  getSuppressedConstraints(): SuppressedConstraint[] {
+    return [...this.suppressedConstraints];
+  }
+
   harden(
     requirements: Requirement[],
     options: HardeningOptions = {}
@@ -125,11 +148,21 @@ export class HardeningEngine {
     this.rejectedClauses = [];
     this.anchorWarnings = [];
     this.semanticCandidates = [];
+    this.suppressedConstraints = [];
+
+    const targets = opts.targetRequirementIds
+      ? new Set(opts.targetRequirementIds)
+      : undefined;
 
     for (const requirement of requirements) {
+      if (targets && !targets.has(requirement.id)) continue;
       const result = this.hardenRequirement(requirement, requirements, opts);
       this.anchorWarnings.push(
-        ...checkConstraintAnchoring(requirement, result.proposedRequirements)
+        ...checkConstraintAnchoring(
+          requirement,
+          result.proposedRequirements,
+          result.triggeredCWEs
+        )
       );
       results.push(result);
     }
@@ -147,7 +180,7 @@ export class HardeningEngine {
   private hardenRequirement(
     requirement: Requirement,
     allRequirements: Requirement[],
-    opts: Required<HardeningOptions>
+    opts: ResolvedOptions
   ): HardeningResult {
     const triggered = this.triggerDetector.detectTriggers(requirement);
 
@@ -161,21 +194,41 @@ export class HardeningEngine {
     // weak signal are handed to the agent to adjudicate semantically — this is
     // where a missing object-level authorization check surfaces.
     const promotedCweIds = new Set(filtered.map((t) => t.cweId));
-    this.semanticCandidates.push(
-      ...collectSemanticCandidates(
-        requirement,
-        triggered,
-        this.mappings,
-        promotedCweIds,
-        {
-          scope: opts.semanticCandidateScope,
-          floor: opts.semanticCandidateFloor,
-          threshold: opts.confidenceThreshold,
-        }
-      )
+    const candidates = collectSemanticCandidates(
+      requirement,
+      triggered,
+      this.mappings,
+      promotedCweIds,
+      {
+        scope: opts.semanticCandidateScope,
+        floor: opts.semanticCandidateFloor,
+        threshold: opts.confidenceThreshold,
+      }
     );
+    // Show each candidate constraint as it would read for this requirement and
+    // spec, not as a raw template with `{actor}` slots.
+    for (const candidate of candidates) {
+      const mapping = this.mappings.find((m) => m.id === candidate.cweId);
+      candidate.candidateConstraints = candidate.candidateConstraints.map((c) => {
+        const constraint = mapping?.earsConstraints.find((e) => e.id === c.id);
+        const template = constraint ? resolveTemplate(constraint, opts.specContext) : c.template;
+        const filled = fillTemplate(template, requirement.text).text;
+        // In the requirement's own subject, as inline constraints are written.
+        const component = requirement.text.match(/\bTHE\s+([A-Za-z][\w-]*)\s+SHALL\b/i)?.[1];
+        return {
+          ...c,
+          template:
+            component && !/^system$/i.test(component)
+              ? filled.replace(/\bTHE SYSTEM\b/g, `THE ${component}`)
+              : filled,
+        };
+      });
+    }
+    this.semanticCandidates.push(...candidates);
 
-    const gaps = this.coverageChecker.checkCoverage(allRequirements, filtered);
+    const gaps = this.coverageChecker
+      .checkCoverage(allRequirements, filtered)
+      .filter((gap) => this.isApplicable(gap, requirement, opts));
 
     const proposed = this.generateProposals(requirement, gaps, opts);
 
@@ -199,6 +252,37 @@ export class HardeningEngine {
   }
 
   /**
+   * True when a gap's constraint fits this spec and this requirement. A
+   * withheld constraint is recorded with its reason, so the omission shows in
+   * the report instead of disappearing.
+   */
+  private isApplicable(
+    gap: CoverageGap,
+    requirement: Requirement,
+    opts: ResolvedOptions
+  ): boolean {
+    const mapping = this.mappings.find((m) => m.id === gap.cweId);
+    const constraint = mapping?.earsConstraints.find((c) => c.id === gap.constraintId);
+    if (!mapping || !constraint) return true;
+
+    let reason = opts.specContext
+      ? contextSuppressionReason(mapping, constraint, opts.specContext)
+      : undefined;
+    if (!reason && constraint.appliesTo && !new RegExp(constraint.appliesTo, "i").test(requirement.text)) {
+      reason = `requirement does not do what ${constraint.securityPrimitive} guards`;
+    }
+    if (!reason) return true;
+
+    this.suppressedConstraints.push({
+      requirementId: requirement.id,
+      cweId: gap.cweId,
+      constraintId: gap.constraintId,
+      reason,
+    });
+    return false;
+  }
+
+  /**
    * Turns coverage gaps into proposals, one per atomic EARS clause.
    *
    * A constraint template may hold several assertions; EARS requires one
@@ -214,19 +298,21 @@ export class HardeningEngine {
   private generateProposals(
     requirement: Requirement,
     gaps: CoverageGap[],
-    opts: Required<HardeningOptions>
+    opts: ResolvedOptions
   ): ProposedRequirement[] {
     const proposals: ProposedRequirement[] = [];
 
     for (const gap of gaps) {
       if (proposals.length >= opts.maxProposalsPerRequirement) break;
 
-      const contextualized = this.contextualizeTemplate(
-        gap.suggestedTemplate,
-        requirement
-      );
+      const mapping = this.mappings.find((m) => m.id === gap.cweId);
+      const constraint = mapping?.earsConstraints.find((c) => c.id === gap.constraintId);
+      const template = constraint
+        ? resolveTemplate(constraint, opts.specContext)
+        : gap.suggestedTemplate;
+      const filled = fillTemplate(template, requirement.text);
 
-      const { clauses, rejected } = toValidEARSClauses(contextualized);
+      const { clauses, rejected } = toValidEARSClauses(filled.text);
 
       for (const entry of rejected) {
         this.rejectedClauses.push({
@@ -248,6 +334,9 @@ export class HardeningEngine {
             ? `SEC-${requirement.id}-${gap.constraintId}-${index + 1}`
             : `SEC-${requirement.id}-${gap.constraintId}`;
 
+        // Only the generic fallbacks that ended up in this clause matter.
+        const genericSlots = filled.genericSlots.filter((g) => clause.includes(g.filledWith));
+
         proposals.push({
           id,
           text: clause,
@@ -256,138 +345,12 @@ export class HardeningEngine {
           securityPrimitives: [gap.missingPrimitive],
           rationale: gap.rationale,
           priority,
+          ...(genericSlots.length > 0 ? { genericSlots } : {}),
         });
       });
     }
 
     return this.deduplicateProposals(proposals);
-  }
-
-  /**
-   * Fills a template's `{placeholder}` slots from the parent requirement.
-   *
-   * Extraction is deliberately conservative: a slot is filled only when the
-   * candidate phrase is independently verified as usable in that position. The
-   * generic fallback ("a user", "the resource") always yields a grammatical
-   * clause, so declining a doubtful extraction costs only specificity, whereas
-   * accepting one produces text that is not valid EARS at all.
-   */
-  private contextualizeTemplate(
-    template: string,
-    requirement: Requirement
-  ): string {
-    let result = template;
-
-    const actor = this.extractActor(requirement.text);
-    if (actor) {
-      result = result.replace(/\{actor\}/g, actor);
-    }
-
-    const operation = this.extractOperation(requirement.text);
-    if (operation) {
-      result = result.replace(/\{operation\}/g, operation);
-    }
-
-    const resourceMatch = requirement.text.match(
-      /(?:the|a|an)\s+(\w+(?:\s+\w+)?)\s+(?:resource|record|data|entity|object)/i
-    );
-    if (resourceMatch) {
-      result = result.replace(/\{resource\}/g, resourceMatch[1].toLowerCase());
-    }
-
-    const input = this.extractInputDescription(requirement.text);
-    if (input) {
-      result = result.replace(/\{input_description\}/g, input);
-    }
-
-    // Generic fallbacks. Applied last so any slot left unfilled above still
-    // resolves to grammatical text — no placeholder may reach the output.
-    result = result.replace(/\{actor\}/g, "a user");
-    result = result.replace(/\{operation\}/g, "the operation");
-    result = result.replace(/\{resource\}/g, "the resource");
-    result = result.replace(/\{input_description\}/g, "the input");
-    result = result.replace(/\{target_state\}/g, "the target state");
-    result = result.replace(/\{target\}/g, "the target");
-    result = result.replace(/\{required_role\}/g, "the required");
-    result = result.replace(/\{high_value_operation\}/g, "the operation");
-    result = result.replace(/\{configured_limit\}/g, "the configured limit");
-
-    return result;
-  }
-
-  /**
-   * Pulls the agent noun phrase out of a requirement's trigger clause.
-   *
-   * Templates read `WHEN {actor} submits ...`, so the slot needs a bare agent —
-   * "a user", "an administrator". The phrase is validated by
-   * `isValidActorPhrase`, which rejects both verb-terminated captures (the source
-   * of "WHEN user submits submits the input") and non-agent nouns (the source of
-   * "WHEN duplicate key submits the input"). Returns undefined when no candidate
-   * qualifies, letting the caller fall back to the generic actor.
-   */
-  private extractActor(text: string): string | undefined {
-    const patterns = [
-      /\b(?:when|while|if)\s+(?:a|an|the)\s+([a-z]+(?:\s+[a-z]+)?)\s+(?:submits?|requests?|presses?|enters?|provides?|selects?|uploads?|confirms?|attempts?|performs?|initiates?|views?)\b/i,
-      /\bthe\s+([a-z]+(?:\s+[a-z]+)?)\s+(?:submits?|requests?|presses?|enters?|provides?|selects?|uploads?|confirms?)\b/i,
-    ];
-
-    for (const pattern of patterns) {
-      const candidate = text.match(pattern)?.[1];
-      if (candidate && isValidActorPhrase(candidate)) {
-        const normalized = candidate.trim().toLowerCase();
-        return /^(?:a|an|the)\s/.test(normalized)
-          ? normalized
-          : `a ${normalized}`;
-      }
-    }
-
-    return undefined;
-  }
-
-  /**
-   * Extracts the operation verb phrase following `shall`.
-   *
-   * Only a verb-initial phrase is accepted; `{operation}` slots sit in
-   * "requests {operation} on {resource}", where a noun-initial phrase would
-   * read as a mangled trigger.
-   */
-  private extractOperation(text: string): string | undefined {
-    const match = text.match(/\bshall\s+([a-z]+(?:\s+[a-z]+){0,2})/i);
-    if (!match) return undefined;
-
-    const phrase = match[1].trim().toLowerCase();
-    const head = phrase.split(/\s+/)[0];
-
-    // Reject auxiliaries and negation — "shall not", "shall be" carry no operation.
-    if (["not", "be", "been", "have", "has", "also", "then"].includes(head)) {
-      return undefined;
-    }
-
-    return phrase;
-  }
-
-  /**
-   * Extracts the object of a submission verb for `{input_description}`.
-   *
-   * The slot appears as "submits {input_description}", so the captured text must
-   * be a noun phrase. Anything carrying a finite verb would reproduce the
-   * doubled-verb defect, so such candidates are declined.
-   */
-  private extractInputDescription(text: string): string | undefined {
-    const match = text.match(
-      /\b(?:submits?|provides?|enters?|supplies?)\s+((?:a|an|the)\s+[\w\s]+?)(?:,|\.|$)/i
-    );
-    if (!match) return undefined;
-
-    const phrase = match[1].trim().toLowerCase().replace(/\s+/g, " ");
-    if (phrase.split(/\s+/).length > 6) return undefined;
-
-    const body = phrase.replace(/^(?:a|an|the)\s+/, "");
-    if (body.split(/\s+/).some((word) => VERB_TOKENS_FOR_INPUT.has(word))) {
-      return undefined;
-    }
-
-    return phrase;
   }
 
   /**

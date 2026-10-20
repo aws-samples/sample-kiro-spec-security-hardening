@@ -57,9 +57,15 @@ export class CoverageChecker {
       return true;
     }
 
+    // A statement that already guarantees the primitive in the spec's own words
+    // covers it outright.
+    if (COVERAGE_EQUIVALENTS[primitive]?.some((pattern) => pattern.test(fullText))) {
+      return true;
+    }
+
     const coverageIndicators = this.extractCoverageIndicators(primitive, template);
     const matchCount = coverageIndicators.filter((indicator) =>
-      fullText.includes(indicator.toLowerCase())
+      indicatorMatches(fullText, indicator)
     ).length;
 
     return matchCount >= Math.ceil(coverageIndicators.length * 0.6);
@@ -134,6 +140,37 @@ export class CoverageChecker {
     return shallClauses.length > 0 ? shallClauses : [template.toLowerCase()];
   }
 }
+
+/**
+ * Indicators are written as small regexes ("hash.*password"). Matching them as
+ * literal text meant those indicators could never match, so a spec that already
+ * stated the constraint was told it was missing.
+ */
+function indicatorMatches(text: string, indicator: string): boolean {
+  try {
+    return new RegExp(indicator, "i").test(text);
+  } catch {
+    return text.includes(indicator.toLowerCase());
+  }
+}
+
+/**
+ * Phrasings that on their own show a primitive is already required. Each is
+ * narrow enough that a spec using it has stated the constraint, not merely
+ * mentioned the topic. "reject the Envelope with a not-authenticated
+ * Error_Reply" is an authentication gate; "exclude Passwords ... from log
+ * output" is log redaction.
+ */
+const COVERAGE_EQUIVALENTS: Record<string, RegExp[]> = {
+  "authentication-required": [/\bnot[- ]authenticated\b/i, /\bunauthenticated\b.*\breject/i],
+  "authentication-enforcement": [/\bnot[- ]authenticated\b/i, /\bunauthenticated\b.*\breject/i],
+  "log-redaction": [
+    /\bexclude[^.]*\bpasswords?\b[^.]*\blog\b/i,
+    /\bshall not (?:write|include|log)[^.]*\bpasswords?\b[^.]*\blog/i,
+  ],
+  "password-hashing": [/\bargon2(?:id)?\b/i],
+  "strong-password-hash": [/\bargon2(?:id)?\b/i],
+};
 
 export interface CoverageGap {
   cweId: string;

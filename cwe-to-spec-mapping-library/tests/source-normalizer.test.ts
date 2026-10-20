@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeSourceRequirement } from "../src/engine/source-normalizer.js";
+import { normalizeSourceRequirement, validateSourceRequirement } from "../src/engine/source-normalizer.js";
 import { validateEARSClause } from "../src/engine/ears-normalizer.js";
 
 /** The requirement that motivated strict source normalization. */
@@ -176,5 +176,31 @@ describe("normalizeSourceRequirement", () => {
     expect(requirements).toHaveLength(1);
     expect(requirements[0].text).toContain("green");
     expect(warnings.some((w) => /not strict EARS/.test(w.message))).toBe(true);
+  });
+});
+
+describe("validateSourceRequirement", () => {
+  it("accepts a compound obligation as written — source requirements are never split", () => {
+    const result = validateSourceRequirement(
+      "WHERE a Data_Directory is configured, THE Chat_Server SHALL create and write files only inside the Data_Directory."
+    );
+    expect(result.valid).toBe(true);
+  });
+
+  it("accepts a 'before ...' qualifier in a source response", () => {
+    const result = validateSourceRequirement(
+      "THE Chat_Client SHALL pass every string received from the Chat_Server through the Display_Sanitizer before the Terminal_UI writes the string to the terminal."
+    );
+    expect(result.valid).toBe(true);
+  });
+
+  it("still reports a requirement with no actor", () => {
+    const result = validateSourceRequirement("REQ-SEC-N-001: All payment operations shall be logged.");
+    expect(result.valid).toBe(false);
+  });
+
+  it("still reports an IF without THEN", () => {
+    const result = validateSourceRequirement("IF the input is invalid, THE SYSTEM SHALL reject it.");
+    expect(result.errors.join(" ")).toMatch(/THEN/);
   });
 });

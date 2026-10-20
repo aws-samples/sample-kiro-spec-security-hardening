@@ -10,7 +10,13 @@ export type {
   HardeningReport,
   HardeningSummary,
   SemanticCandidate,
+  SpecContext,
+  SpecFeature,
+  SpecLanguage,
+  SuppressedConstraint,
 } from "./types/index.js";
+
+export { detectSpecContext, contextSuppressionReason } from "./engine/spec-context.js";
 
 export { HardeningEngine, formatAsSecurityAnnotatedEARS } from "./engine/hardening-engine.js";
 export type { HardeningOptions, RejectedClause } from "./engine/hardening-engine.js";
@@ -19,6 +25,7 @@ export {
   atomizeTemplate,
   classifyEARSPattern,
   hoistEmbeddedPrecondition,
+  isHoistableEvent,
   isValidActorPhrase,
   normalizeEARSClause,
   toValidEARSClauses,
@@ -26,7 +33,13 @@ export {
 } from "./engine/ears-normalizer.js";
 export type { EARSValidationResult } from "./engine/ears-normalizer.js";
 
-export { normalizeSourceRequirement } from "./engine/source-normalizer.js";
+export {
+  normalizeSourceRequirement,
+  validateConstraintStatement,
+  validateSourceRequirement,
+} from "./engine/source-normalizer.js";
+export { fillTemplate, resolveTemplate } from "./engine/template-filler.js";
+export type { FilledTemplate } from "./engine/template-filler.js";
 export type {
   NormalizedRequirement,
   SourceNormalizationResult,
@@ -56,6 +69,14 @@ export {
   parseRequirementsFromMarkdown,
   hardenMarkdownFile,
   hardenMarkdownFiles,
+} from "./cli/parse-and-harden.js";
+export type {
+  AddedLine,
+  ConstraintWarning,
+  HardenFileOptions,
+  HardenFileResult,
+  HardenMode,
+  ParsedRequirement,
 } from "./cli/parse-and-harden.js";
 
 export {

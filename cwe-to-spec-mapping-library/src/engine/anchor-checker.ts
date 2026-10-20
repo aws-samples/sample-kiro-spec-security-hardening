@@ -1,4 +1,4 @@
-import type { ProposedRequirement, Requirement } from "../types/index.js";
+import type { ProposedRequirement, Requirement, TriggeredCWE } from "../types/index.js";
 
 /**
  * Flags security constraints attached to the wrong point in a flow.
@@ -17,6 +17,12 @@ import type { ProposedRequirement, Requirement } from "../types/index.js";
  * record is already committed, so "return 403 and skip the update" produces
  * exactly the half-applied state the spec's own atomicity requirements forbid.
  *
+ * A second, more common misplacement is a CWE that fired on loose keywords
+ * alone. "WHEN the user enters `/quit` ..., THE Chat_Client SHALL send a logout
+ * request" contains "input", "enter" and "request", which is enough for input
+ * validation to fire, yet the requirement handles no untrusted input. No
+ * semantic pattern of the CWE matched, so the placement is reported for review.
+ *
  * This module only reports. Moving a constraint to the right requirement changes
  * which obligation the spec places where, which is an author's decision rather
  * than something a formatter should silently do.
@@ -26,6 +32,7 @@ import type { ProposedRequirement, Requirement } from "../types/index.js";
 const REQUEST_SCOPED = [
   /\brequesting principal\b/i,
   /\bHTTP 40[13]\b/i,
+  /\bauthorization error\b/i,
   /\bauthenticated caller\b/i,
   /\bCSRF token\b/i,
   /\bthe request\b/i,
@@ -67,6 +74,46 @@ export function isRequestScopedConstraint(text: string): boolean {
  * result as "this spec needs an author's attention".
  */
 export function checkConstraintAnchoring(
+  requirement: Requirement,
+  proposals: ProposedRequirement[],
+  triggered: TriggeredCWE[] = []
+): AnchorWarning[] {
+  return [
+    ...checkInternalEventAnchoring(requirement, proposals),
+    ...checkKeywordOnlyAnchoring(requirement, proposals, triggered),
+  ];
+}
+
+/**
+ * Reports proposals whose CWE matched only on keywords, with no semantic
+ * pattern. One warning per CWE, naming every constraint it produced.
+ */
+function checkKeywordOnlyAnchoring(
+  requirement: Requirement,
+  proposals: ProposedRequirement[],
+  triggered: TriggeredCWE[]
+): AnchorWarning[] {
+  const warnings: AnchorWarning[] = [];
+  for (const cwe of triggered) {
+    if (!cwe.matchedPatterns || cwe.matchedPatterns.length > 0) continue;
+    const ids = proposals
+      .filter((proposal) => proposal.addressesCWEs.includes(cwe.cweId))
+      .map((proposal) => proposal.id);
+    if (ids.length === 0) continue;
+    warnings.push({
+      requirementId: requirement.id,
+      constraintId: ids.join(", "),
+      message:
+        `${cwe.cweId} matched ${requirement.id} only on the keywords ` +
+        `${(cwe.matchedKeywords ?? []).map((k) => `"${k}"`).join(", ")}, with no ` +
+        `pattern of the weakness — confirm the requirement actually handles it, ` +
+        `or move or drop the constraint`,
+    });
+  }
+  return warnings;
+}
+
+function checkInternalEventAnchoring(
   requirement: Requirement,
   proposals: ProposedRequirement[]
 ): AnchorWarning[] {

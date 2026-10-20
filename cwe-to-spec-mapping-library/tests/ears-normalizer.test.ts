@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   atomizeTemplate,
+  hoistEmbeddedPrecondition,
+  isHoistableEvent,
   classifyEARSPattern,
   isValidActorPhrase,
   normalizeEARSClause,
@@ -238,5 +240,60 @@ describe("toValidEARSClauses (full pipeline)", () => {
     expect(rejected).toHaveLength(0);
     expect(clauses).toHaveLength(2);
     clauses.forEach((c) => expect(validateEARSClause(c).valid).toBe(true));
+  });
+});
+
+describe("named component actors", () => {
+  it("accepts THE <Component> SHALL as an explicit actor", () => {
+    expect(validateEARSClause("THE Chat_Server SHALL keep a Muted_Room muted until a Moderator unmutes the Room.").valid).toBe(true);
+    expect(validateEARSClause("THE Payment Service SHALL reject the refund.").valid).toBe(true);
+  });
+
+  it("still rejects a passive clause with no actor", () => {
+    const result = validateEARSClause("Sensitive fields SHALL be replaced.");
+    expect(result.valid).toBe(false);
+  });
+
+  it("accepts and classifies a WHERE + IF complex requirement", () => {
+    const clause =
+      "WHERE a Data_Directory is configured, IF a line of a history file cannot be decoded, THEN THE Chat_Server SHALL skip that line.";
+    const result = validateEARSClause(clause);
+    expect(result.errors).toEqual([]);
+    expect(classifyEARSPattern(clause)).toBe("complex");
+  });
+
+  it("accepts a WHERE + WHEN complex requirement naming a component", () => {
+    const clause =
+      "WHERE the Message_Search extension is provided, WHEN the user enters /search <text>, THE Chat_Client SHALL send a search request.";
+    expect(validateEARSClause(clause).errors).toEqual([]);
+  });
+});
+
+describe("moving a 'before ...' qualifier", () => {
+  it("leaves a bare-noun qualifier in the response", () => {
+    expect(hoistEmbeddedPrecondition("THE SYSTEM SHALL validate the data before use.")).toBe(
+      "THE SYSTEM SHALL validate the data before use."
+    );
+    expect(hoistEmbeddedPrecondition("THE SYSTEM SHALL lock the account before the deadline.")).toBe(
+      "THE SYSTEM SHALL lock the account before the deadline."
+    );
+  });
+
+  it("still moves a gerund phrase or a clause with its own verb", () => {
+    expect(hoistEmbeddedPrecondition("THE SYSTEM SHALL verify ownership before executing the operation.")).toBe(
+      "WHILE the operation is being executed, THE SYSTEM SHALL verify ownership."
+    );
+    expect(isHoistableEvent("the token expires")).toBe(true);
+    expect(isHoistableEvent("use")).toBe(false);
+    expect(isHoistableEvent("deployment")).toBe(false);
+  });
+
+  it("accepts a generated clause that keeps a bare-noun qualifier", () => {
+    expect(validateEARSClause("THE SYSTEM SHALL validate the data before use.").valid).toBe(true);
+  });
+
+  it("rejects a one-word trigger", () => {
+    const result = validateEARSClause("WHEN use, THE SYSTEM SHALL validate the data.");
+    expect(result.errors.join(" ")).toMatch(/names no event or state/);
   });
 });

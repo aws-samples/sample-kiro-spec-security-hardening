@@ -1,4 +1,4 @@
-import type { CWEMapping, Requirement, TriggerCondition, TriggeredCWE } from "../types/index.js";
+import type { CWEMapping, Requirement, TriggeredCWE } from "../types/index.js";
 import { allMappings } from "../mappings/index.js";
 
 export class TriggerDetector {
@@ -20,6 +20,8 @@ export class TriggerDetector {
           cweName: mapping.name,
           confidence: matchResult.confidence,
           matchedTriggers: matchResult.matchedTriggers,
+          matchedKeywords: matchResult.matchedKeywords,
+          matchedPatterns: matchResult.matchedPatterns,
           severity: mapping.severity,
         });
       }
@@ -36,27 +38,40 @@ export class TriggerDetector {
   private evaluateMapping(
     text: string,
     mapping: CWEMapping
-  ): { confidence: number; matchedTriggers: string[] } {
+  ): {
+    confidence: number;
+    matchedTriggers: string[];
+    matchedKeywords: string[];
+    matchedPatterns: string[];
+  } {
     let maxScore = 0;
     const matchedTriggers: string[] = [];
+    const matchedKeywords = new Set<string>();
+    const matchedPatterns = new Set<string>();
 
     for (const trigger of mapping.triggerConditions) {
-      const triggerScore = this.evaluateTrigger(text, trigger);
+      const keywords = this.matchKeywords(text, trigger.keywords);
+      const patterns = this.matchPatterns(text, trigger.semanticPatterns);
+      const triggerScore = this.scoreTrigger(keywords.length, patterns.length);
       if (triggerScore > 0) {
         matchedTriggers.push(trigger.description);
+        keywords.forEach((k) => matchedKeywords.add(k));
+        patterns.forEach((p) => matchedPatterns.add(p));
         if (triggerScore > maxScore) {
           maxScore = triggerScore;
         }
       }
     }
 
-    return { confidence: Math.min(maxScore, 1.0), matchedTriggers };
+    return {
+      confidence: Math.min(maxScore, 1.0),
+      matchedTriggers,
+      matchedKeywords: [...matchedKeywords],
+      matchedPatterns: [...matchedPatterns],
+    };
   }
 
-  private evaluateTrigger(text: string, trigger: TriggerCondition): number {
-    const keywordHits = this.countKeywordHits(text, trigger.keywords);
-    const patternHits = this.countPatternHits(text, trigger.semanticPatterns);
-
+  private scoreTrigger(keywordHits: number, patternHits: number): number {
     if (keywordHits === 0 && patternHits === 0) return 0;
 
     // Keywords are alternative indicators — 2+ hits is strong signal
@@ -69,28 +84,67 @@ export class TriggerDetector {
     return Math.min(keywordScore * 0.4 + patternScore * 0.6, 1.0);
   }
 
-  private countKeywordHits(text: string, keywords: string[]): number {
-    if (keywords.length === 0) return 0;
-    return keywords.filter((kw) => text.includes(kw.toLowerCase())).length;
+  private matchKeywords(text: string, keywords: string[]): string[] {
+    return keywords.filter((kw) => compileKeyword(kw).test(text));
   }
 
-  private countPatternHits(text: string, patterns: string[]): number {
-    if (patterns.length === 0) return 0;
-    let matchCount = 0;
-
-    for (const pattern of patterns) {
+  private matchPatterns(text: string, patterns: string[]): string[] {
+    return patterns.filter((pattern) => {
       try {
-        const regex = new RegExp(pattern, "i");
-        if (regex.test(text)) {
-          matchCount++;
-        }
+        return compilePattern(pattern).test(text);
       } catch {
-        if (text.includes(pattern.toLowerCase())) {
-          matchCount++;
-        }
+        return compileKeyword(pattern).test(text);
       }
-    }
-
-    return matchCount;
+    });
   }
+}
+
+/**
+ * Inflections a keyword or pattern word may carry and still count as a match:
+ * "log" matches "logs" and "logged", "request" matches "requests".
+ */
+const INFLECTION = "(?:s|es|ed|d|ing)?";
+
+const compiled = new Map<string, RegExp>();
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * A keyword matches whole words only. Substring matching made "log" fire on
+ * "logout", "id" on "invalid" and "enter" on "center", which attached
+ * logging, IDOR and input constraints to requirements about none of them.
+ */
+function compileKeyword(keyword: string): RegExp {
+  const key = `k:${keyword}`;
+  let regex = compiled.get(key);
+  if (!regex) {
+    regex = new RegExp(`\\b${escapeRegExp(keyword.toLowerCase())}${INFLECTION}\\b`, "i");
+    compiled.set(key, regex);
+  }
+  return regex;
+}
+
+/**
+ * Compiles a semantic pattern so that each literal segment between `.*` gaps
+ * matches on word boundaries. Without them "log.*request" matched "logout
+ * request" and "register.*user" matched "register <username>".
+ */
+function compilePattern(pattern: string): RegExp {
+  const key = `p:${pattern}`;
+  let regex = compiled.get(key);
+  if (!regex) {
+    const source = pattern
+      .split(".*")
+      .map((segment) => {
+        const start = /^[\w(]/.test(segment) ? "\\b" : "";
+        const end = /[\w)]$/.test(segment) ? `${INFLECTION}\\b` : "";
+        return `${start}${segment}${end}`;
+      })
+      .join(".*");
+    regex = new RegExp(source, "i");
+    compiled.set(key, regex);
+  }
+  return regex;
 }
