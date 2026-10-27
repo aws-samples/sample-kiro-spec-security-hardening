@@ -1,14 +1,14 @@
-# Spec It Safe — Kiro Power
+# Specification Hardening Engine — Kiro Power
 
 Harden your Kiro specs with security primitives **before** code is written.
 
-Spec It Safe (SIS) analyzes EARS-format requirements, detects which
+Specification Hardening Engine analyzes EARS-format requirements, detects which
 CWE/OWASP weaknesses each requirement is exposed to, and proposes traceable,
 testable security requirements to close the gaps. Security becomes a first-class
 construct in the spec — not an afterthought bolted on at code review.
 
 ```
-Specify (EARS)  →  [ Spec It Safe ]  →  Plan  →  Execute
+Specify (EARS)  →  [ Specification Hardening Engine ]  →  Plan  →  Execute
 ```
 
 ## What's in this power
@@ -19,9 +19,9 @@ specification so Kiro can install it directly.
 ```
 plugin.json                       # power manifest
 skills/
-  harden-spec/                    # workflow: run SIS over .kiro/specs and apply the results
+  harden-spec/                    # workflow: run the Specification Hardening Engine over .kiro/specs and apply the results
   security-primitives-reference/  # CWE→primitive knowledge base + methodology
-cwe-to-spec-mapping-library/      # the bundled SIS engine (TypeScript CLI + library)
+cwe-to-spec-mapping-library/      # the bundled Specification Hardening Engine (TypeScript CLI + library)
 ```
 
 Two skills are exposed to the Kiro agent:
@@ -57,16 +57,16 @@ for the full guide.
 1. Clone the repository:
 
    ```bash
-   git clone https://github.com/aws-samples/sample-kiro-spec-security-hardening.git spec-it-safe
+   git clone https://github.com/aws-samples/sample-kiro-spec-security-hardening.git specification-hardening-engine
    ```
 
 2. Open the **Powers** panel, click **Add Custom Power**, then
    **Import power from a folder**.
-3. Choose the `spec-it-safe` directory (it contains `plugin.json`) and click
+3. Choose the `specification-hardening-engine` directory (it contains `plugin.json`) and click
    **Install**.
 
 **From the Kiro powers registry** (once published): browse
-[kiro.dev/powers](https://kiro.dev/powers), select **Spec It Safe**, and click
+[kiro.dev/powers](https://kiro.dev/powers), select **Specification Hardening Engine**, and click
 **Add to Kiro**.
 
 ### Kiro CLI
@@ -77,9 +77,9 @@ clone the engine inside the project, where the `harden-spec` skill can find it:
 
 ```bash
 cd /path/to/your/project
-git clone https://github.com/aws-samples/sample-kiro-spec-security-hardening.git .kiro/spec-it-safe
+git clone https://github.com/aws-samples/sample-kiro-spec-security-hardening.git .kiro/specification-hardening-engine
 mkdir -p .kiro/skills
-cp -R .kiro/spec-it-safe/skills/harden-spec .kiro/spec-it-safe/skills/security-primitives-reference .kiro/skills/
+cp -R .kiro/specification-hardening-engine/skills/harden-spec .kiro/specification-hardening-engine/skills/security-primitives-reference .kiro/skills/
 ```
 
 ### The engine is prebuilt
@@ -89,7 +89,7 @@ has no runtime dependencies, so an installed power runs with Node.js alone.
 To rebuild it after changing the source (contributors only):
 
 ```bash
-cd spec-it-safe/cwe-to-spec-mapping-library   # or .kiro/spec-it-safe/... for Kiro CLI
+cd specification-hardening-engine/cwe-to-spec-mapping-library   # or .kiro/specification-hardening-engine/... for Kiro CLI
 npm ci --ignore-scripts && npm run build
 ```
 
@@ -98,20 +98,20 @@ Commit the rebuilt `dist/` together with the source change.
 ## Quick start: try it on the bundled example
 
 The repository ships a sample spec, `examples/user-management.md`, and its
-expected hardened output, `examples/user-management.hardened.md`. To see SIS
+expected hardened output, `examples/user-management.hardened.md`. To see the Specification Hardening Engine
 work without writing a spec of your own:
 
 ```bash
-cd spec-it-safe/cwe-to-spec-mapping-library
+cd specification-hardening-engine/cwe-to-spec-mapping-library
 
 # The CLI hardens files in place, so work on a copy of the example.
 # Keep the file name: constraint IDs are derived from it.
-mkdir -p /tmp/sis-demo
-cp examples/user-management.md /tmp/sis-demo/
-node dist/cli/harden-requirements.js /tmp/sis-demo/user-management.md --semantic-candidates
+mkdir -p /tmp/spec-hardening-demo
+cp examples/user-management.md /tmp/spec-hardening-demo/
+node dist/cli/harden-requirements.js /tmp/spec-hardening-demo/user-management.md --semantic-candidates
 
 # Compare with the expected result (no output means identical)
-diff /tmp/sis-demo/user-management.md examples/user-management.hardened.md
+diff /tmp/spec-hardening-demo/user-management.md examples/user-management.hardened.md
 ```
 
 To try it in Kiro, copy the example into a project as a spec, then ask Kiro to
@@ -172,7 +172,7 @@ Build once, then point the compiled CLI at one spec file or a whole specs
 directory (directories are searched for `.md` files):
 
 ```bash
-cd spec-it-safe/cwe-to-spec-mapping-library
+cd specification-hardening-engine/cwe-to-spec-mapping-library
 
 # Harden every spec in a project
 node dist/cli/harden-requirements.js /abs/path/to/project/.kiro/specs/

@@ -28,7 +28,7 @@ describe("in-place curated hardening", () => {
   let unhardened: string[];
 
   beforeAll(async () => {
-    dir = await mkdtemp(join(tmpdir(), "sis-curated-"));
+    dir = await mkdtemp(join(tmpdir(), "spec-hardening-curated-"));
     inputPath = join(dir, "requirements.md");
     await writeFile(inputPath, SOURCE, "utf-8");
 
@@ -158,7 +158,7 @@ describe("inline constraints adopt the spec's component subject", () => {
   let curated: string;
 
   beforeAll(async () => {
-    dir = await mkdtemp(join(tmpdir(), "sis-component-"));
+    dir = await mkdtemp(join(tmpdir(), "spec-hardening-component-"));
     inputPath = join(dir, "requirements.md");
     await writeFile(inputPath, COMPONENT_SOURCE, "utf-8");
     await hardenMarkdownFile(inputPath);
@@ -214,7 +214,7 @@ describe("cross-cutting baseline consolidation", () => {
   let baselineCount: number;
 
   beforeAll(async () => {
-    dir = await mkdtemp(join(tmpdir(), "sis-baseline-"));
+    dir = await mkdtemp(join(tmpdir(), "spec-hardening-baseline-"));
     inputPath = join(dir, "requirements.md");
     await writeFile(inputPath, MULTI, "utf-8");
     const result = await hardenMarkdownFile(inputPath);
@@ -290,7 +290,7 @@ describe("hardening never changes the meaning of a source requirement", () => {
   let content: string;
 
   beforeAll(async () => {
-    dir = await mkdtemp(join(tmpdir(), "sis-meaning-"));
+    dir = await mkdtemp(join(tmpdir(), "spec-hardening-meaning-"));
     inputPath = join(dir, "requirements.md");
     await writeFile(inputPath, SOURCE, "utf-8");
     result = await hardenMarkdownFile(inputPath);
@@ -337,7 +337,7 @@ describe("incremental re-runs", () => {
   let inputPath: string;
 
   beforeAll(async () => {
-    dir = await mkdtemp(join(tmpdir(), "sis-incremental-"));
+    dir = await mkdtemp(join(tmpdir(), "spec-hardening-incremental-"));
     inputPath = join(dir, "requirements.md");
     await writeFile(inputPath, SOURCE, "utf-8");
     await hardenMarkdownFile(inputPath);
@@ -409,7 +409,7 @@ describe("files hardened by an older version", () => {
   let inputPath: string;
 
   beforeAll(async () => {
-    dir = await mkdtemp(join(tmpdir(), "sis-legacy-"));
+    dir = await mkdtemp(join(tmpdir(), "spec-hardening-legacy-"));
     inputPath = join(dir, "requirements.md");
     await writeFile(inputPath, LEGACY, "utf-8");
   });
@@ -464,7 +464,7 @@ The Chat_System is written in Go.
   let content: string;
 
   beforeAll(async () => {
-    dir = await mkdtemp(join(tmpdir(), "sis-dedup-"));
+    dir = await mkdtemp(join(tmpdir(), "spec-hardening-dedup-"));
     inputPath = join(dir, "requirements.md");
     await writeFile(inputPath, SOURCE, "utf-8");
     result = await hardenMarkdownFile(inputPath);

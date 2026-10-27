@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-  "name": "spec-it-safe",
+  "name": "specification-hardening-engine",
   "version": "1.0.0",
-  "description": "Harden Kiro specs with security primitives before code is written. Analyzes EARS-format requirements, detects relevant CWE/OWASP weaknesses, and proposes traceable, testable security requirements.",
+  "description": "Specification Hardening Engine — harden Kiro specs with security primitives before code is written. Analyzes EARS-format requirements, detects relevant CWE/OWASP weaknesses, and proposes traceable, testable security requirements.",
   "author": {
     "name": "Rajdeep Mukherjee"
   },

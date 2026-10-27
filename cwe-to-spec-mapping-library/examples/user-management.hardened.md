@@ -89,7 +89,7 @@ These constraints apply to every requirement above. They are stated once here ra
 - SEC-BASELINE-7 [SECURITY: authentication-enforcement] IF a request is rejected for missing authentication, THEN THE SYSTEM SHALL NOT process the request further.
 
 <!-- spec-it-safe:reviewed v1
-Requirements already hardened by Spec It Safe, as hashes of their text.
+Requirements already hardened by Specification Hardening Engine, as hashes of their text.
 A re-run hardens only requirements whose hash is missing here.
 c8263d69be97 4068eb1c3e25 e7d904bedcf9 0a158f4f8cc7 cd8cbfa161ec 39d23cf63a69 0f81fa57c983 55be8c418ec9
 23d94d0c8137 ca4ccd8ab576 8cd25ba89cb5 fe566e115970

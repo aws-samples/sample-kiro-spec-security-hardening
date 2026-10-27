@@ -1,10 +1,10 @@
-# Spec It Safe (SIS)
+# Specification Hardening Engine
 
 A TypeScript library and CLI that automatically hardens software requirements with security constraints derived from CWE, OWASP, and CVE mappings. It analyzes EARS-format requirements, detects which CWEs are relevant based on keyword and semantic pattern matching, and proposes security requirements to close the gaps — all before a single line of code is written.
 
 ## Why
 
-Security vulnerabilities are cheapest to fix at the requirements phase. Yet most teams bolt security on during code review or penetration testing — after the architecture is set. SIS makes security a first-class construct in your specification by:
+Security vulnerabilities are cheapest to fix at the requirements phase. Yet most teams bolt security on during code review or penetration testing — after the architecture is set. The Specification Hardening Engine makes security a first-class construct in your specification by:
 
 1. Scanning each requirement for security-relevant patterns (database queries, file uploads, authentication flows, etc.)
 2. Mapping those patterns to specific CWEs (e.g., CWE-89 SQL Injection, CWE-862 Missing Authorization)
@@ -352,13 +352,13 @@ result.removedArtifacts;      // any stale *_hardened.md / *final_requirements.m
 
 ## Integration with Kiro
 
-SIS is designed to integrate into Kiro's spec-driven development workflow:
+The Specification Hardening Engine is designed to integrate into Kiro's spec-driven development workflow:
 
 ```
-Specify (EARS) → [SIS Hardening] → Plan → Execute
+Specify (EARS) → [Specification Hardening Engine] → Plan → Execute
 ```
 
-Installed as part of the Spec It Safe power, the `harden-spec` skill runs this
+Installed as part of the Specification Hardening Engine power, the `harden-spec` skill runs this
 CLI for you. Ask Kiro to *"harden my specs"* and it finds the engine, confirms
 which specs to harden, runs the CLI, and does a semantic review pass on top. See
 the [power README](../README.md#run-it).

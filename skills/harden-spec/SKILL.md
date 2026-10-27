@@ -9,7 +9,7 @@ metadata:
 
 # Harden a Spec with Security Primitives
 
-Runs the bundled **Spec It Safe (SIS)** engine over EARS-format requirements to
+Runs the bundled **Specification Hardening Engine** over EARS-format requirements to
 find missing security constraints and propose traceable, testable EARS
 requirements that close them — before a single line of code is written.
 
@@ -28,7 +28,7 @@ Specify (EARS)  →  [ harden-spec ]  →  Plan  →  Execute
 
 ## The engine
 
-The SIS engine ships inside this power at `cwe-to-spec-mapping-library/`. It is a
+The Specification Hardening Engine ships inside this power at `cwe-to-spec-mapping-library/`. It is a
 deterministic TypeScript CLI — prefer running it over hand-authoring
 constraints, so results are reproducible and every constraint is CWE-traceable.
 

@@ -47,7 +47,7 @@ export class HardeningEngine {
      * the deterministic output but worth an agent's semantic review. Empty unless
      * a CWE scored inside the `(floor, threshold)` band for some requirement. This
      * is the recall bridge for gaps lexical matching cannot infer (e.g. a missing
-     * object-level authorization check); consuming it is what turns SIS from a
+     * object-level authorization check); consuming it is what turns the Specification Hardening Engine from a
      * pattern matcher into a pattern matcher plus an agentic reviewer.
      */
     getSemanticCandidates() {

@@ -1,4 +1,4 @@
-# Spec It Safe (SIS) — Security Hardening for Spec-Driven Development
+# Specification Hardening Engine — Security Hardening for Spec-Driven Development
 
 ## Purpose
 
@@ -9,7 +9,7 @@ This subagent hardens EARS-format requirements with security constraints derived
 Invoke this subagent **after** all functional requirements are finalized in EARS format and **before** code generation begins. The workflow is:
 
 ```
-Specify → [SIS Hardening] → Plan → Execute
+Specify → [Specification Hardening Engine] → Plan → Execute
 ```
 
 ## Invocation

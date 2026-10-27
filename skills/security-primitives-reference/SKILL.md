@@ -1,6 +1,6 @@
 ---
 name: "security-primitives-reference"
-description: "Reference knowledge for mapping requirements to CWE/OWASP weaknesses and the security primitives that close them. Use to explain why a hardening constraint was proposed, to justify EARS security requirements, or to harden a spec by hand when the SIS engine cannot run."
+description: "Reference knowledge for mapping requirements to CWE/OWASP weaknesses and the security primitives that close them. Use to explain why a hardening constraint was proposed, to justify EARS security requirements, or to harden a spec by hand when the Specification Hardening Engine cannot run."
 license: "MIT-0"
 metadata:
   author: "Rajdeep Mukherjee"

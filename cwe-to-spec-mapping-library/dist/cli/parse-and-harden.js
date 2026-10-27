@@ -348,7 +348,7 @@ function renderMarker(hashes) {
         rows.push(ordered.slice(i, i + 8).join(" "));
     return [
         "<!-- spec-it-safe:reviewed v1",
-        "Requirements already hardened by Spec It Safe, as hashes of their text.",
+        "Requirements already hardened by Specification Hardening Engine, as hashes of their text.",
         "A re-run hardens only requirements whose hash is missing here.",
         ...rows,
         "-->",
